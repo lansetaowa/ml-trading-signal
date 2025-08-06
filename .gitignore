@@ -22,6 +22,8 @@ output/
 records/
 *.txt
 *.csv
+*.db
+*.h5
 
 # OS
 .DS_Store
