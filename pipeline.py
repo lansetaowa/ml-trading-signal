@@ -1,0 +1,158 @@
+import warnings
+warnings.filterwarnings('ignore')
+
+import pandas as pd
+from datetime import datetime, timedelta, timezone
+
+from data.crypto_data_loader import DataHandler, load_multi_symbol_data
+from data.db_utils import get_connection, init_db, get_last_timestamp, upsert_df
+
+from model.feature_generator import FeatureGenerator, FeatureProcessor
+from model.fit_pred import split_data, clean_xy, fit_predict_regression_model
+from model.signal_generator import SignalGenerator
+
+from config import (feature_config,
+                    feature_process_config,
+                    signal_config,
+                    target,
+                    load_symbols,
+                    tscv,
+                    reg_model)
+
+pd.set_option('display.max_rows', None)
+pd.set_option('display.max_columns', None)
+pd.set_option('display.max_info_columns', 200)
+
+# --- 配置部分 ---
+INTERVAL = '1h'
+START_DELTA = timedelta(days=90)
+# model_start_date = (datetime.utcnow() - START_DELTA).strftime('%Y-%m-%d %H:%M:%S')
+DB_PATH = 'data/crypto_data.db'
+MODEL_NAME = 'rf-reg'
+STRATEGY_NAME = 'zscore_atr_v1'
+target_col = 'target_1h'
+
+# === Step 1: 获取数据库连接和最新时间 ===
+def ensure_db_initialized():
+    handler = DataHandler()
+    symbols = list(set([target]+load_symbols)) # 获取哪些symbol的数据
+    conn = get_connection(DB_PATH)
+    init_db(conn)
+
+    last_dt = get_last_timestamp(conn, table='kline')
+    start_str = (
+        (last_dt + timedelta(hours=1)).strftime('%Y-%m-%d %H:%M:%S') if last_dt
+        else (datetime.utcnow() - START_DELTA).strftime('%Y-%m-%d %H:%M:%S')
+    )
+    model_start_date = (datetime.utcnow() - START_DELTA).strftime('%Y-%m-%d %H:%M:%S')
+
+    return conn, handler, symbols, start_str, model_start_date
+
+# === Step 2: 下载最新价格数据 存入数据库 kline 表 ===
+def fetch_and_store_new_data(conn, handler, symbols, start_str):
+    if (
+            datetime.strptime(start_str, "%Y-%m-%d %H:%M:%S")
+            .replace(tzinfo=timezone.utc)
+            < datetime.now(timezone.utc)
+    ):
+        df_price = load_multi_symbol_data(handler, symbols, start_str=start_str)
+        if not df_price.empty:
+            df_price.reset_index(inplace=True)
+            df_price = df_price[['symbol', 'datetime', 'open', 'high', 'low', 'close', 'volume']]
+            print(f'upserting {len(df_price)} lines of price data...')
+            upsert_df(df_price, table='kline', conn=conn)
+    else:
+        print('Price data is up to date.')
+
+# === Step 4: 读取最近 N 天的数据用于建模 ===
+def prepare_feature_data(conn, target, model_start_date):
+    price_all = pd.read_sql_query(
+        f"SELECT * FROM kline WHERE datetime >= '{model_start_date}' ORDER BY datetime",
+        conn,
+        parse_dates=['datetime']
+    )
+    price_all.set_index(['symbol', 'datetime'], inplace=True)
+
+    df_features = (
+        FeatureGenerator(config=feature_config)
+        .load_data(price_all)
+        .select_symbols(target_symbol=target)
+        .compute_volume_features()
+        .compute_momentum_features()
+        .compute_volatility_features()
+        .compute_target_cols()
+        .compute_time_dummies()
+        .compute_tech_indicators()
+        .compute_candle_patterns()
+        .get_single_symbol_data(target_symbol=target)
+    )
+
+    df_processed = (
+        FeatureProcessor(config=feature_process_config)
+        .load_data(df_features)
+        .scale_metrics()
+        .drop_cols()
+        .df
+    )
+    return df_processed, price_all
+
+# === Step 6: 建模 + 预测（时间交叉验证）===
+def train_and_predict(df_processed, cv):
+    X, y = split_data(df_processed)
+    X_clean, y_clean = clean_xy(X, y[target_col])
+    pred_df = fit_predict_regression_model(reg_model, X_clean, y_clean, cv)
+
+    return pred_df
+
+# === Step 7: 生成交易信号 ===
+def generate_signals(pred_df, price_all, target):
+    df_signal = (
+        SignalGenerator(config=signal_config)
+        .load_data(pred_df=pred_df, price_df=price_all)
+        .merge_pred_price(target_symbol=target)
+        .zscore_normalize()
+        .compute_raw_signal()
+        .apply_atr_volatility_filter()
+        .compute_positions()
+        .compute_reversals()
+        .apply_min_signal_spacing(min_space=2)
+    )
+
+    df_signal_final = df_signal.drop(columns=['open', 'high', 'low', 'close', 'volume']).copy()
+    df_signal_final = df_signal_final.reset_index()
+    df_signal_final['symbol'] = target
+    df_signal_final['model_name'] = MODEL_NAME
+    df_signal_final['strategy_name'] = STRATEGY_NAME
+
+    return df_signal_final[
+        ['symbol', 'datetime', 'actuals', 'predicted', 'zscore',
+         'raw_signal', 'vol_filter', 'filtered_signal',
+         'position', 'signal_reversal', 'final_signal',
+         'model_name', 'strategy_name']
+    ]
+
+# === Step 8: 结果存入数据库 prediction / signal 表 ===
+def store_signals(df_signal_final, conn):
+    upsert_df(df_signal_final, table='signals', conn=conn)
+
+def run_pipeline():
+    # 初始化数据库连接
+    conn, handler, symbols, start_str, model_start_date = ensure_db_initialized()
+
+    # 下载并存储最新价格数据
+    fetch_and_store_new_data(conn, handler, symbols, start_str)
+
+    # 特征工程
+    df_processed, price_all = prepare_feature_data(conn, target, model_start_date)
+
+    # 模型训练与预测
+    pred_df = train_and_predict(df_processed, cv=tscv)
+
+    # 生成信号
+    df_signal_final = generate_signals(pred_df, price_all, target)
+
+    # 写入数据库
+    store_signals(df_signal_final, conn)
+
+if __name__ == '__main__':
+    run_pipeline()

@@ -1,6 +1,7 @@
 from dotenv import load_dotenv
 import os
 from sklearn.ensemble import RandomForestRegressor
+from model.timeseries_cv import MultipleTimeSeriesCV
 
 # 获取 config.py 的绝对路径
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -50,6 +51,14 @@ feature_process_config = {
     'cols_to_drop': ["open","high","low","close","volume","dollar_vol","hour",
                 "atr","macdhist",'hour_bin_label','cmo','tema_12','tema_24','tema_36']
 }
+
+# cv
+tscv = MultipleTimeSeriesCV(
+        train_length=24 * 7 * 4,
+        test_length=24,
+        lookahead=1,
+        date_idx='datetime'
+    )
 
 # model
 reg_model = rf = RandomForestRegressor(
