@@ -24,44 +24,60 @@ def init_db(conn):
     ''')
 
     cursor.execute('''
-    CREATE TABLE IF NOT EXISTS prediction (
+    CREATE TABLE IF NOT EXISTS signals (
         symbol TEXT,
         datetime TEXT,
-        predicted_return REAL,
-        model_name TEXT,
-        PRIMARY KEY (symbol, datetime, model_name)
-    )
-    ''')
-
-    cursor.execute('''
-    CREATE TABLE IF NOT EXISTS signal (
-        symbol TEXT,
-        datetime TEXT,
+        actuals REAL,
+        predicted REAL,
+        zscore REAL,
+        raw_signal INTEGER,
+        vol_filter BOOLEAN,
+        filtered_signal INTEGER,
+        position INTEGER,
+        signal_reversal INTEGER,
         final_signal INTEGER,
+        model_name TEXT,
         strategy_name TEXT,
-        PRIMARY KEY (symbol, datetime, strategy_name)
+        PRIMARY KEY (symbol, datetime, model_name, strategy_name)
     )
     ''')
 
     conn.commit()
 
-
-def upsert_df(df: pd.DataFrame, table: Literal['kline', 'prediction', 'signal'], conn):
+def upsert_df(df: pd.DataFrame, table: Literal['kline', 'signals'], conn):
     cursor = conn.cursor()
 
-    # Convert all Timestamp/datetime64 columns to string in ISO format
-    for col in df.select_dtypes(include=['datetime64[ns]', 'datetime64[ns, UTC]']).columns:
-        df[col] = df[col].dt.strftime('%Y-%m-%d %H:%M:%S')
+    if table == 'kline':
+        insert_sql = '''
+            INSERT INTO kline (symbol, datetime, open, high, low, close, volume)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(symbol, datetime) DO UPDATE SET
+                open=excluded.open,
+                high=excluded.high,
+                low=excluded.low,
+                close=excluded.close,
+                volume=excluded.volume
+        '''
+        df = df[['symbol', 'datetime', 'open', 'high', 'low', 'close', 'volume']].copy()
+        df['datetime'] = pd.to_datetime(df['datetime'], utc=True).dt.tz_convert(None).astype(str)
 
-    # 确保列顺序一致
-    columns = ', '.join(df.columns)
-    placeholders = ', '.join(['?'] * len(df.columns))
+    elif table == 'signals':
+        insert_sql = '''
+            INSERT OR IGNORE INTO signals
+            (symbol, datetime, actuals, predicted, zscore,
+             raw_signal, vol_filter, filtered_signal,
+             position, signal_reversal, final_signal,
+             model_name, strategy_name)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        '''
+        df = df[['symbol', 'datetime', 'actuals', 'predicted', 'zscore',
+                 'raw_signal', 'vol_filter', 'filtered_signal',
+                 'position', 'signal_reversal', 'final_signal',
+                 'model_name', 'strategy_name']].copy()
+        df['datetime'] = df['datetime'].astype(str)
 
-    # 根据主键，append或ignore已有数据
-    insert_sql = f"""
-        INSERT OR REPLACE INTO {table} ({columns})
-        VALUES ({placeholders})
-    """
+    else:
+        raise ValueError(f"Unsupported table name: {table}")
 
     cursor.executemany(insert_sql, df.values.tolist())
     conn.commit()
@@ -72,9 +88,10 @@ def read_latest_data(conn, table: str, limit: int = 360):
     ORDER BY datetime DESC
     LIMIT ?
     '''
-
     return pd.read_sql_query(query,
-                             conn, params=(limit), parse_dates=['datetime'])
+                             conn,
+                             params=(limit),
+                             parse_dates=['datetime'])
 
 def get_last_timestamp(conn, table: str) -> pd.Timestamp | None:
     query = f'''

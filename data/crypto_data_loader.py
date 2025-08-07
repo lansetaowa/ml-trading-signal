@@ -20,6 +20,7 @@ class DataHandler:
         df = df.iloc[:, :6]
         df.columns = ['datetime', 'open', 'high', 'low', 'close', 'volume']
         df['datetime'] = pd.to_datetime(df['datetime'], unit='ms', utc=True)
+        df['datetime'] = df['datetime'].dt.tz_convert(None)  # 去掉 tzinfo，统一为 naive
         df.set_index('datetime', inplace=True)
         return df.astype(float)
 
