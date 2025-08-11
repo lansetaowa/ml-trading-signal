@@ -118,4 +118,4 @@ if __name__ == '__main__':
     # print(signals.info())
     # print(signals.head())
 
-    plot_recent_signals(limit=5*24)
+    plot_recent_signals(limit=3*24)

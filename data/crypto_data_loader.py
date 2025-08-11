@@ -25,7 +25,10 @@ class DataHandler:
         return df.astype(float)
 
     def get_historical_klines(self, symbol='BTCUSDT', interval='1h', start_str='30 days ago UTC', end_str=None):
-        raw_data = self.client.get_historical_klines(symbol=symbol, interval=interval, start_str=start_str, end_str=end_str)
+        raw_data = self.client.get_historical_klines(symbol=symbol,
+                                                     interval=interval,
+                                                     start_str=start_str,
+                                                     end_str=end_str)
         df = pd.DataFrame(raw_data)
         return self.transform_df(df)
 

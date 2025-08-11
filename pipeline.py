@@ -37,7 +37,7 @@ def ensure_db_initialized():
     handler = DataHandler()
     symbols = list(set([target]+load_symbols)) # 获取哪些symbol的数据
     conn = get_connection(DB_PATH)
-    init_db(conn)
+    # init_db(conn)
 
     last_dt = get_last_timestamp(conn, table='kline')
     start_str = (
