@@ -47,7 +47,7 @@ class DataHandler:
 def load_multi_symbol_data(handler, symbols, interval='1h', start_str='30 days ago UTC', end_str=None):
     all_data = []
     for symbol in symbols:
-        print(f"getting data for {symbol}")
+        # print(f"getting data for {symbol}")
         df = handler.get_historical_klines(symbol=symbol, interval=interval, start_str=start_str, end_str=end_str)
         df['symbol'] = symbol
         all_data.append(df)
@@ -58,17 +58,19 @@ def load_multi_symbol_data(handler, symbols, interval='1h', start_str='30 days a
     return df_all
 
 if __name__ == '__main__':
+    pd.set_option('display.max_rows', None)
+    pd.set_option('display.max_columns', None)
 
     data_handler = DataHandler()
-    symbols = data_handler.get_binance_symbols()[:5]
+    symbols = ['BTCUSDT', 'ETHUSDT','SOLUSDT','DOGEUSDT']
     print(symbols)
     #
-    df_all = load_multi_symbol_data(data_handler, symbols, interval='1h', start_str='2025-06-01 00:00:00')
+    df_all = load_multi_symbol_data(data_handler, symbols, interval='1h', start_str='2025-08-12 00:06:00')
     # df_all = df_all.reset_index()
     # df_all['Date'] = df_all['Date'].dt.tz_convert(None)
     # df_all = df_all.set_index(['symbol', 'Date'])
-    print(df_all.info())
-    print(df_all.head())
+    # print(df_all.info())
+    print(df_all)
     # df_all.to_hdf('data.h5', 'bn/price')
     #
     # df = pd.read_hdf('data.h5', 'bn/price')
