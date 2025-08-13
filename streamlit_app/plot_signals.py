@@ -2,6 +2,7 @@ import numpy as np
 import pandas as pd
 
 import mplfinance as mpf
+import matplotlib.dates as mdates
 
 from data.db_utils import get_connection
 DB_PATH = '../data/crypto_data.db'
@@ -36,6 +37,15 @@ def plot_recent_signals(limit = 24*3, strategy_name='rf-reg'):
 
     # 保证 OHLC 有统一索引（DatetimeIndex）
     ohlc = filtered_df[['open', 'high', 'low', 'close']].copy()
+
+    # ===== ATR(12) 计算（基于 TR 的 12 期滚动均值）=====
+    prev_close = ohlc['close'].shift(1)
+    tr = np.maximum(
+        ohlc['high'] - ohlc['low'],
+        np.maximum((ohlc['high'] - prev_close).abs(), (ohlc['low'] - prev_close).abs())
+    )
+    atr = tr.rolling(window=12, min_periods=1).mean()
+
     # 构造 y 序列：跟 ohlc 一样长，其它位置设为 np.nan
     long_signal_y = np.full(len(filtered_df), np.nan)
     short_signal_y = np.full(len(filtered_df), np.nan)
@@ -47,8 +57,12 @@ def plot_recent_signals(limit = 24*3, strategy_name='rf-reg'):
     apds = [
         mpf.make_addplot(long_signal_y, type='scatter', marker='^', color='blue', markersize=100),
         mpf.make_addplot(short_signal_y, type='scatter', marker='v', color='orange', markersize=100),
+
+        # ATR 作为第2个面板（panel=1）
+        mpf.make_addplot(atr, panel=1, type='line', ylabel='ATR(12)')
     ]
 
+    # 画图并拿到轴对象，便于给 ATR 标注
     mpf.plot(
         ohlc,
         type='candle',
@@ -58,8 +72,12 @@ def plot_recent_signals(limit = 24*3, strategy_name='rf-reg'):
         addplot=apds,
         figsize=(14, 6),
         datetime_format='%b %d %H:%M',
-        xrotation=20
+        xrotation=20,
+        panel_ratios=(3, 1),
+        returnfig=True
     )
+
+    mpf.show()
 
 def plot_signals(df, start, end, symbol, strategy_name):
 
