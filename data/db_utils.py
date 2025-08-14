@@ -81,17 +81,6 @@ def upsert_df(df: pd.DataFrame, table: Literal['kline', 'signals'], conn):
 
     cursor.executemany(insert_sql, df.values.tolist())
     conn.commit()
-#
-# def read_latest_data(conn, table: str, limit: int = 360):
-#     query = f'''
-#     SELECT * FROM {table}
-#     ORDER BY datetime DESC
-#     LIMIT ?
-#     '''
-#     return pd.read_sql_query(query,
-#                              conn,
-#                              params=(limit),
-#                              parse_dates=['datetime'])
 
 def get_last_timestamp(conn, table: str) -> pd.Timestamp | None:
     query = f'''

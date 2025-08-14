@@ -10,7 +10,12 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 load_dotenv(os.path.join(BASE_DIR, 'proxy.env'))
 binance_proxy = os.getenv('binance_proxy')
 
-# load data symbols
+# load Binance api/key
+load_dotenv(os.path.join(BASE_DIR, "binance_api.env"))
+BINANCE_API_KEY = os.getenv('B_KEY')
+BINANCE_API_SECRET = os.getenv('B_SECRET')
+
+# data symbols
 target = 'ETHUSDT'
 load_symbols = ['BTCUSDT', 'ETHUSDT','SOLUSDT','DOGEUSDT']
 
@@ -61,7 +66,7 @@ tscv = MultipleTimeSeriesCV(
     )
 
 # model
-reg_model = rf = RandomForestRegressor(
+reg_rf = RandomForestRegressor(
     n_estimators=300,
     min_samples_leaf=7,
     max_features='sqrt',

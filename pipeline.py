@@ -5,7 +5,7 @@ import pandas as pd
 from datetime import datetime, timedelta, timezone
 
 from data.crypto_data_loader import DataHandler, load_multi_symbol_data
-from data.db_utils import get_connection, init_db, get_last_timestamp, upsert_df
+from data.db_utils import get_connection, upsert_df
 
 from model.feature_generator import FeatureGenerator, FeatureProcessor
 from model.fit_pred import split_data, clean_xy, fit_predict_regression_model
@@ -39,30 +39,9 @@ def ensure_db_initialized():
     conn = get_connection(DB_PATH)
     # init_db(conn)
 
-    last_dt = get_last_timestamp(conn, table='kline')
-    start_str = (
-        (last_dt + timedelta(hours=1)).strftime('%Y-%m-%d %H:%M:%S') if last_dt
-        else (datetime.utcnow() - START_DELTA).strftime('%Y-%m-%d %H:%M:%S')
-    )
     model_start_date = (datetime.utcnow() - START_DELTA).strftime('%Y-%m-%d %H:%M:%S')
 
-    return conn, handler, symbols, start_str, model_start_date
-
-# === Step 2: 下载最新价格数据 存入数据库 kline 表 ===
-def fetch_and_store_new_data(conn, handler, symbols, start_str):
-    if (
-            datetime.strptime(start_str, "%Y-%m-%d %H:%M:%S")
-            .replace(tzinfo=timezone.utc)
-            < datetime.now(timezone.utc)
-    ):
-        df_price = load_multi_symbol_data(handler, symbols, start_str=start_str)
-        if not df_price.empty:
-            df_price.reset_index(inplace=True)
-            df_price = df_price[['symbol', 'datetime', 'open', 'high', 'low', 'close', 'volume']]
-            # print(f'upserting {len(df_price)} lines of price data...')
-            upsert_df(df_price, table='kline', conn=conn)
-    else:
-        print('Price data is up to date.')
+    return conn, handler, symbols, model_start_date
 
 # === Step 2: 回溯 N 天并写到“此刻”为止（允许未完结K线，后续覆盖） ===
 def fetch_and_store_backfill_no_lag(conn, handler, symbols, backfill_days=1):
@@ -164,7 +143,7 @@ def store_signals(df_signal_final, conn):
 
 def run_pipeline():
     # 初始化数据库连接
-    conn, handler, symbols, start_str, model_start_date = ensure_db_initialized()
+    conn, handler, symbols, model_start_date = ensure_db_initialized()
 
     # 下载并存储最新价格数据
     fetch_and_store_backfill_no_lag(conn, handler, symbols, backfill_days=1)
@@ -182,4 +161,5 @@ def run_pipeline():
     store_signals(df_signal_final, conn)
 
 if __name__ == '__main__':
+
     run_pipeline()
