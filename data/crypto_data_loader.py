@@ -104,11 +104,9 @@ class DataHandler:
 
         # ---- 4) 组装 DataFrame & 标准化 ----
         if not all_rows:
-            return pd.DataFrame(columns=['Open', 'High', 'Low', 'Close', 'Volume'])
+            return pd.DataFrame(columns=['open', 'high', 'low', 'close', 'volume'])
 
         df = pd.DataFrame(all_rows)
-        # 你的 transform_df 预期前6列为: open_time, open, high, low, close, volume
-        # futures_klines 返回的结构满足这个假设，所以直接复用
         df = self.transform_df(df)  # 会做：ms -> UTC，重命名列，设为索引等
 
         # 保险起见按时间排序
@@ -143,19 +141,19 @@ def load_multi_symbol_data(handler, symbols, interval='1h', start_str='30 days a
 if __name__ == '__main__':
     pd.set_option('display.max_rows', None)
     pd.set_option('display.max_columns', None)
-    from data.db_utils import get_connection, upsert_df
+    # from data.db_utils import get_connection, upsert_df
 
-    conn = get_connection('crypto_data.db')
+    # conn = get_connection('crypto_data.db')
 
     data_handler = DataHandler()
     symbols = ['BTCUSDT', 'ETHUSDT','SOLUSDT','DOGEUSDT']
     # print(symbols)
     #
-    df_all = load_multi_symbol_data(data_handler, symbols, interval='1h', start_str='2025-05-01 00:00:00')
+    df_all = load_multi_symbol_data(data_handler, symbols, interval='1h', start_str='2025-08-10 00:00:00')
     # df_all = df_all.reset_index()
     # df_all['datetime'] = df_all['datetime'].dt.tz_convert(None)
     # df_all = df_all.set_index(['symbol', 'Date'])
-    # print(df_all.info())
+    print(df_all.info())
     # upsert_df(df_all, table='kline', conn=conn)
 
     # df_all.to_hdf('data.h5', 'bn/price')

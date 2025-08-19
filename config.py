@@ -36,7 +36,7 @@ feature_config = {
             'period2':12,
             'period3':24
         },
-    "patterms": {
+    "patterns": {
             'CDLENGULFING': '吞没形态',
             'CDLHAMMER': '锤子线',
             'CDLHANGINGMAN': '吊人线',

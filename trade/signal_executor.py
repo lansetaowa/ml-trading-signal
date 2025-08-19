@@ -186,7 +186,7 @@ class SignalExecutor:
         取消该 symbol 下的 TP/SL 条件单（TAKE_PROFIT[_MARKET] / STOP[_MARKET] / TRAILING_STOP_MARKET）。
         避免无仓位时仍残留条件单。
         """
-        open_orders = self.trader.client.futures_get_open_orders(symbol=self.cfg.symbol)
+        open_orders = self.trader.get_open_orders(symbol=self.cfg.symbol)
         types_to_cancel = {
             "TAKE_PROFIT", "TAKE_PROFIT_MARKET",
             "STOP", "STOP_MARKET",
@@ -195,8 +195,8 @@ class SignalExecutor:
         for od in open_orders:
             if od.get("type") in types_to_cancel:
                 try:
-                    self.trader.client.futures_cancel_order(
-                        symbol=self.cfg.symbol, orderId=od["orderId"]
+                    self.trader.cancel_order(
+                        symbol=self.cfg.symbol, order_id=od["orderId"]
                     )
                     print(f"✅ 已取消遗留条件单: id={od['orderId']}, type={od['type']}")
                 except Exception as e:
@@ -336,7 +336,10 @@ class SignalExecutor:
     # ---------------- Main orchestration ----------------
 
     def run_once(self):
-        symbol = self.cfg.symbol
+        # symbol = self.cfg.symbol
+
+        # 先对时
+        self.trader.sync_time()
 
         sig = self._get_latest_signal()
         print(f"最新信号: {sig}")
@@ -431,7 +434,7 @@ if __name__ == '__main__':
     # long_qty, short_qty = exec._get_position_qtys()
     # print(long_qty, short_qty)
     # exec._close_side_if_any(position_side='SHORT')
-    # exec._cancel_symbol_conditional_orders()
+    exec._cancel_symbol_conditional_orders()
     # entry_price = exec._open_market_full_balance(position_side='LONG')
     # print(entry_price)
     #

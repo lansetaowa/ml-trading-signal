@@ -10,7 +10,6 @@ class FeatureGenerator:
         df must contain: open/high/low/close/volume and with symbol/datetime indexes (named symbol/datetime)
         """
         self.df = None
-        config = config
 
         self.other_symbols = config.get('other_symbols', ['BTCUSDT', 'ETHUSDT','SOLUSDT','DOGEUSDT'])
         self.lags = config.get('lags', [1, 2, 4, 12, 24, 48, 72])
@@ -168,7 +167,7 @@ class FeatureGenerator:
         self.df['bb_high'] = self.df.bb_high.sub(self.df.open).div(self.df.open).apply(np.log1p)  # 上轨与当前价格的 log 比率（上轨相对偏离度）
         self.df['bb_low'] = self.df.open.sub(self.df.bb_low).div(self.df.open).apply(np.log1p)  # 下轨与当前价格的 log 比率（下轨相对偏离度）
 
-        lags = [12, 24, 36]
+        lags = self.tema_windows
         for lag in lags:
             self.df[f"tema_{lag}"] = self.df.groupby(level='symbol', group_keys=False).apply(
                 lambda df: talib.TEMA(df.close, timeperiod=lag))
@@ -235,7 +234,6 @@ class FeatureProcessor:
 
     def __init__(self, config=None):
         self.df = None
-        config = config
 
         self.metrics_to_scale = config.get('metrics_to_scale', ["high", "low", "close"])
         self.cols_to_drop = config.get('cols_to_drop', ["open","high","low","close","volume","dollar_vol","hour",

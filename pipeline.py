@@ -44,10 +44,10 @@ def ensure_db_initialized():
     return conn, handler, symbols, model_start_date
 
 # === Step 2: 回溯 N 天并写到“此刻”为止（允许未完结K线，后续覆盖） ===
-def fetch_and_store_backfill_no_lag(conn, handler, symbols, backfill_days=1):
+def fetch_and_store_backfill_no_lag(conn, handler, symbols, backfill_hours=4):
 
     now_utc = datetime.now(timezone.utc).replace(second=0, microsecond=0)  # 到当前时刻（分级对齐）
-    start_dt = now_utc - timedelta(days=backfill_days)
+    start_dt = now_utc - timedelta(hours=backfill_hours)
 
     start_str = start_dt.strftime('%Y-%m-%d %H:%M:%S')
     end_str   = now_utc.strftime('%Y-%m-%d %H:%M:%S')
@@ -66,18 +66,15 @@ def fetch_and_store_backfill_no_lag(conn, handler, symbols, backfill_days=1):
                 .sort_values(['symbol', 'datetime']))
     df_price = df_price.drop_duplicates(subset=['symbol', 'datetime'], keep='last')
 
-    print(f'Upserting {len(df_price)} rows into kline (backfill {backfill_days}d, no lag, allow provisional bars)...')
+    print(f'Upserting {len(df_price)} rows into kline (backfill {backfill_hours}h, no lag, allow provisional bars)...')
     upsert_df(df_price, table='kline', conn=conn)
 
 
 # === Step 4: 读取最近 N 天的数据用于建模 ===
-def prepare_feature_data(conn, target, model_start_date):
-    price_all = pd.read_sql_query(
-        f"SELECT * FROM kline WHERE datetime >= '{model_start_date}' ORDER BY datetime",
-        conn,
-        parse_dates=['datetime']
-    )
-    price_all.set_index(['symbol', 'datetime'], inplace=True)
+def prepare_feature_data(conn, handler, symbols, target, model_start_date):
+
+    # 数据来自从币安api实时获取
+    price_all = load_multi_symbol_data(handler, symbols, start_str=model_start_date)
 
     df_features = (
         FeatureGenerator(config=feature_config)
@@ -146,10 +143,10 @@ def run_pipeline():
     conn, handler, symbols, model_start_date = ensure_db_initialized()
 
     # 下载并存储最新价格数据
-    fetch_and_store_backfill_no_lag(conn, handler, symbols, backfill_days=1)
+    fetch_and_store_backfill_no_lag(conn, handler, symbols, backfill_hours=4)
 
     # 特征工程
-    df_processed, price_all = prepare_feature_data(conn, target, model_start_date)
+    df_processed, price_all = prepare_feature_data(conn, handler, symbols, target, model_start_date)
 
     # 模型训练与预测
     pred_df = train_and_predict(df_processed, cv=tscv)
@@ -162,4 +159,15 @@ def run_pipeline():
 
 if __name__ == '__main__':
 
-    run_pipeline()
+    from conf.settings_loader import settings
+
+    print(settings.features.model_dump())
+
+    # run_pipeline()
+    # conn, handler, symbols, model_start_date = ensure_db_initialized()
+    # df_processed, price_all = prepare_feature_data(conn, handler, symbols, ltarget, model_start_date)
+    #
+    # print(df_processed.info())
+    # print(price_all.info())
+
+

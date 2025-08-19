@@ -61,20 +61,26 @@ def upsert_df(df: pd.DataFrame, table: Literal['kline', 'signals'], conn):
         df = df[['symbol', 'datetime', 'open', 'high', 'low', 'close', 'volume']].copy()
         df['datetime'] = pd.to_datetime(df['datetime'], utc=True).dt.tz_convert(None).astype(str)
 
+
     elif table == 'signals':
+        # 仅更新actuals列，更新之前未完成的bar信息
         insert_sql = '''
-            INSERT OR IGNORE INTO signals
+            INSERT INTO signals
             (symbol, datetime, actuals, predicted, zscore,
              raw_signal, vol_filter, filtered_signal,
              position, signal_reversal, final_signal,
              model_name, strategy_name)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(symbol, datetime, model_name, strategy_name) DO UPDATE SET
+                actuals=excluded.actuals
         '''
         df = df[['symbol', 'datetime', 'actuals', 'predicted', 'zscore',
                  'raw_signal', 'vol_filter', 'filtered_signal',
                  'position', 'signal_reversal', 'final_signal',
                  'model_name', 'strategy_name']].copy()
-        df['datetime'] = df['datetime'].astype(str)
+
+        # 统一成无 tz 的 UTC 字符串，避免主键冲突的“伪不同”
+        df['datetime'] = pd.to_datetime(df['datetime'], utc=True).dt.tz_convert(None).astype(str)
 
     else:
         raise ValueError(f"Unsupported table name: {table}")

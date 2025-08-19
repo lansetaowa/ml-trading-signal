@@ -17,8 +17,6 @@ class SignalGenerator:
         self.pred_df = None
         self.price_df = None
 
-        config = config
-
         self.z_window = config.get('z_window', 24)
         self.z_threshold = config.get('z_threshold', 1)
         self.atr_windows = config.get('atr_windows', {

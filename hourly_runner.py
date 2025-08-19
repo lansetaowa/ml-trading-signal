@@ -45,8 +45,8 @@ db_cfg = DBConfig(
 exec_cfg = ExecConfig(
     symbol="ETHUSDT",
     dualSidePosition=True,  # 当前是双向
-    use_balance_ratio=0.5,  # 用多少比例的余额开仓
-    atr_period=12,
+    use_balance_ratio=1,  # 用多少比例的余额开仓
+    atr_period=8,
     atr_k=1.5,
     slippage_ticks=2
 )

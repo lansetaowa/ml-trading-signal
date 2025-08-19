@@ -1,4 +1,5 @@
 from binance.client import Client
+from binance.exceptions import BinanceAPIException
 from decimal import Decimal, ROUND_DOWN
 from binance.enums import (
     FUTURE_ORDER_TYPE_MARKET,
@@ -8,16 +9,48 @@ from binance.enums import (
     FUTURE_ORDER_TYPE_STOP,         # 限价止损
 )
 
+import time
+
 from config import binance_proxy
 
 class BinanceFutureTrader:
 
-    def __init__(self, api_key=None, api_secret=None):
+    def __init__(self, api_key=None, api_secret=None, recv_window: int = 10000):
 
         self.client = Client(
             api_key, api_secret,
             requests_params={'proxies': {'http': binance_proxy,'https': binance_proxy}}
             )
+        self.recv_window = int(recv_window)
+        self.sync_time()  # 启动即对时
+
+    # ---------- 时间同步与重试 ----------
+
+    def sync_time(self):
+        """
+        NEW: 与 Binance 服务器对时，设置 client.timestamp_offset。
+        优先使用合约服务器时间，失败则退回现货服务器时间。
+        """
+        try:
+            server_time = self.client.futures_time()['serverTime']
+        except Exception:
+            server_time = self.client.get_server_time()['serverTime']
+        local = int(time.time() * 1000)
+        self.client.timestamp_offset = int(server_time) - local
+        # 可选：打印观测
+        print(f"[sync_time] offset={self.client.timestamp_offset}ms")
+
+    def _call_with_resync(self, fn, *args, **kwargs):
+        """
+        NEW: 包装一次 API 调用；若遇到 -1021（本地时间超前）→ 先对时再重试一次。
+        """
+        try:
+            return fn(*args, **kwargs)
+        except BinanceAPIException as e:
+            if e.code == -1021:
+                self.sync_time()
+                return fn(*args, **kwargs)
+            raise
 
     # ---------- 基础工具 ----------
 
@@ -69,19 +102,46 @@ class BinanceFutureTrader:
         """
         返回 'HEDGE' 或 'ONE_WAY'
         """
-        mode = self.client.futures_get_position_mode()
+        mode = self._call_with_resync(
+            self.client.futures_get_position_mode, recvWindow=self.recv_window
+        )
         return 'HEDGE' if mode.get('dualSidePosition') else 'ONE_WAY'
 
     # 查询合约usdt余额
     def get_available_balance(self):
         try:
-            account_info = self.client.futures_account_balance()
+            account_info = self._call_with_resync(
+                self.client.futures_account_balance, recvWindow=self.recv_window
+            )
             for asset in account_info:
                 if asset['asset'] == 'USDT':
-                    return float(asset['availableBalance'])
+                    return float(asset.get('availableBalance', 0))
         except Exception as e:
             print(f"❌ 获取 Binance 合约账户余额出错: {e}")
             return None
+
+    def get_open_orders(self, symbol: str):
+        """
+        NEW: 查询挂单（签名接口，带重试+recvWindow）
+        """
+        return self._call_with_resync(
+            self.client.futures_get_open_orders, symbol=symbol, recvWindow=self.recv_window
+        )
+
+    def cancel_order(self, symbol: str, order_id: int | str):
+        """
+        NEW: 撤单（签名接口，带重试+recvWindow）
+        """
+        return self._call_with_resync(
+            self.client.futures_cancel_order, symbol=symbol, orderId=order_id, recvWindow=self.recv_window
+        )
+
+    def mark_price(self, symbol: str) -> float:
+        """
+        NEW: 标记价（公共接口，无需签名）
+        """
+        mp = self.client.futures_mark_price(symbol=symbol)
+        return float(mp["markPrice"])
 
     # ---------- 获取某个symbol已有仓位 ----------
     def _parse_position_row(self, p: dict) -> dict:
@@ -114,7 +174,9 @@ class BinanceFutureTrader:
         - 双向模式：返回 {'LONG': {...}, 'SHORT': {...}}，若某方向无仓位则 positionAmt=0
         - 单向模式：返回 {...} 单条记录（side=LONG/SHORT/FLAT）
         """
-        rows = self.client.futures_position_information(symbol=symbol)
+        rows = self._call_with_resync(
+            self.client.futures_position_information, symbol=symbol, recvWindow=self.recv_window
+        )
         if not rows:
             # 理论上不会为空，但兜底
             if dualSidePosition:
@@ -216,7 +278,9 @@ class BinanceFutureTrader:
             if reduce_only:
                 params['reduceOnly'] = 'true'
 
-        return self.client.futures_create_order(**params)
+        return self._call_with_resync(
+            self.client.futures_create_order, **params, recvWindow=self.recv_window
+        )
 
     # 设置止盈
     def set_take_profit(
@@ -267,7 +331,9 @@ class BinanceFutureTrader:
             params['quantity'] = self.round_to_size(quantity, step)
             params['reduceOnly'] = 'true'
 
-        return self.client.futures_create_order(**params)
+        return self._call_with_resync(
+            self.client.futures_create_order, **params, recvWindow=self.recv_window
+        )
 
     # 设置限价止盈
     def _infer_oneway_side(self, symbol: str) -> str:
@@ -325,7 +391,9 @@ class BinanceFutureTrader:
         step = self.get_step_size(symbol)
         params['quantity'] = self.round_to_size(quantity, step)
 
-        return self.client.futures_create_order(**params)
+        return self._call_with_resync(
+            self.client.futures_create_order, **params, recvWindow=self.recv_window
+        )
 
     # 设置止损
     def set_stop_loss(
@@ -375,7 +443,9 @@ class BinanceFutureTrader:
             params['quantity'] = self.round_to_size(quantity, step)
             params['reduceOnly'] = 'true'
 
-        return self.client.futures_create_order(**params)
+        return self._call_with_resync(
+            self.client.futures_create_order, **params, recvWindow=self.recv_window
+        )
 
     # 设置限价止损
     def set_stop_loss_limit(
@@ -422,7 +492,9 @@ class BinanceFutureTrader:
         step = self.get_step_size(symbol)
         params['quantity'] = self.round_to_size(quantity, step)
 
-        return self.client.futures_create_order(**params)
+        return self._call_with_resync(
+            self.client.futures_create_order, **params, recvWindow=self.recv_window
+        )
 
 if __name__ == '__main__':
     from config import BINANCE_API_KEY, BINANCE_API_SECRET
@@ -482,8 +554,8 @@ if __name__ == '__main__':
     #                                           quantity=0.01)
     # print(sl_order)
     # tp_order = bn_future_trader.set_take_profit_limit(symbol=symbol,
-    #                                             stop_price=4480,
-    #                                             price=4480,
+    #                                             stop_price=4380,
+    #                                             price=4380,
     #                                             positionSide='SHORT',
     #                                             quantity=0.01)
     # print(tp_order)
