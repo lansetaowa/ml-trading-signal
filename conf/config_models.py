@@ -1,5 +1,5 @@
 from typing import List, Dict, Optional, Literal
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 # === Leaf sections ===
@@ -27,12 +27,12 @@ class DataSymbols(BaseModel):
     target: str
     load_symbols: List[str]
 
-    @field_validator("load_symbols")
-    def include_target(cls, v, values):
-        tgt = values.get("target")
-        if tgt and tgt not in v:
-            return v + [tgt]
-        return v
+    @model_validator(mode="after")
+    def include_target(self):
+        # self 已经是解析后的对象
+        if self.target not in self.load_symbols:
+            self.load_symbols = [*self.load_symbols, self.target]
+        return self
 
 class DataConfig(BaseModel):
     interval: Literal["1m","5m","15m","1h","4h","1d"] = "1h"
@@ -46,26 +46,25 @@ class FeaturesUlti(BaseModel):
     period3: int = 24
 
 class FeaturesConfig(BaseModel):
-    other_symbols: List[str]
-    lags: List[int]
-    rt_targets: List[int]
+    other_symbols: list[str]
+    lags: list[int]
+    rt_targets: list[int]
     vol_window: int
     rsi_window: int
     mfi_window: int
     bb_window: int
-    tema_windows: List[int]
+    tema_windows: list[int]
     adx_window: int
     cmo_window: int
-    ulti_os_windows: FeaturesUlti
-    patterns: Dict[str, str] = Field(default_factory=dict)
+    ulti_os_windows: "FeaturesUlti"
+    patterns: dict[str, str] = Field(default_factory=dict)
 
-    @field_validator("lags")
-    def lags_include_rt_targets(cls, lags, values):
-        rts = values.get("rt_targets", [])
-        missing = [t for t in rts if t not in lags]
+    @model_validator(mode="after")
+    def check_lags_cover_rt_targets(self):
+        missing = [t for t in self.rt_targets if t not in self.lags]
         if missing:
             raise ValueError(f"lags 必须包含 rt_targets：缺少 {missing}")
-        return lags
+        return self
 
 class FeatureProcessConfig(BaseModel):
     metrics_to_scale: List[str]

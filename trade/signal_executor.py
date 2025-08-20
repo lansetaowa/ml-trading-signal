@@ -434,7 +434,7 @@ if __name__ == '__main__':
     # long_qty, short_qty = exec._get_position_qtys()
     # print(long_qty, short_qty)
     # exec._close_side_if_any(position_side='SHORT')
-    exec._cancel_symbol_conditional_orders()
+    # exec._cancel_symbol_conditional_orders()
     # entry_price = exec._open_market_full_balance(position_side='LONG')
     # print(entry_price)
     #

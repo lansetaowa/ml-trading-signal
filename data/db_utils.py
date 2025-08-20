@@ -106,6 +106,7 @@ if __name__ == '__main__':
     # df.reset_index(inplace=True)
     #
     conn = get_connection()
+    print(conn)
     # init_db(conn=conn)
     # # upsert_df(df=df, table='kline', conn=conn)
     #

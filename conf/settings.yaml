@@ -54,7 +54,7 @@ feature_process:
 
 cv:
   train_length: 672    # 24*7*4
-  test_length: 24
+  test_length: 12
   lookahead: 1
   date_idx: "datetime"
 

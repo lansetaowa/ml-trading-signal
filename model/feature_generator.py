@@ -259,8 +259,14 @@ if __name__ == '__main__':
     pd.set_option('display.max_columns', None)
     pd.set_option('display.max_info_columns', 200)
 
-    from config import feature_config, feature_process_config, target, load_symbols
+    # from config import feature_config, feature_process_config, target, load_symbols
     from data.crypto_data_loader import load_multi_symbol_data, DataHandler
+
+    from conf.settings_loader import settings
+    feature_config = settings.features.model_dump()
+    feature_process_config = settings.feature_process.model_dump()
+    target = settings.data.symbols.target
+    load_symbols = settings.data.symbols.load_symbols
 
     handler = DataHandler()
     symbols = list(set([target]+load_symbols))

@@ -11,10 +11,14 @@ from pipeline import run_pipeline
 # ====== 交易执行：按信号下单 ======
 from trade.future_trader import BinanceFutureTrader
 from trade.signal_executor import SignalExecutor, DBConfig, ExecConfig
-from config import BINANCE_API_KEY, BINANCE_API_SECRET
+# from config import BINANCE_API_KEY, BINANCE_API_SECRET
+
+from conf.settings_loader import settings
 
 # ====== 日志配置 ======
-log_file = "logs/hourly_runner.log"
+log_file = settings.paths.log_path
+os.makedirs(os.path.dirname(log_file), exist_ok=True)
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -26,10 +30,13 @@ logging.basicConfig(
 )
 
 # ====== 全局初始化（避免每次调度重复创建客户端）======
-trader = BinanceFutureTrader(api_key=BINANCE_API_KEY, api_secret=BINANCE_API_SECRET)
+trader = BinanceFutureTrader(
+    api_key=settings.binance.api_key,
+    api_secret=settings.binance.api_secret
+)
 
 db_cfg = DBConfig(
-    db_path="data/crypto_data.db",  # ← 改成你的 SQLite 路径
+    db_path=settings.paths.db_path,
     signals_table="signals",
     klines_table="kline",
     signals_symbol_col="symbol",
@@ -42,13 +49,22 @@ db_cfg = DBConfig(
     k_time_col="datetime",
 )
 
+# exec_cfg = ExecConfig(
+#     symbol="ETHUSDT",
+#     dualSidePosition=True,  # 当前是双向
+#     use_balance_ratio=1,  # 用多少比例的余额开仓
+#     atr_period=8,
+#     atr_k=1.5,
+#     slippage_ticks=2
+# )
+
 exec_cfg = ExecConfig(
-    symbol="ETHUSDT",
-    dualSidePosition=True,  # 当前是双向
-    use_balance_ratio=1,  # 用多少比例的余额开仓
-    atr_period=8,
-    atr_k=1.5,
-    slippage_ticks=2
+    symbol=settings.trading.exec.symbol,
+    dualSidePosition=settings.trading.exec.dualSidePosition,
+    use_balance_ratio=settings.trading.exec.use_balance_ratio,
+    atr_period=settings.trading.exec.atr_period,
+    atr_k=settings.trading.exec.atr_k,
+    slippage_ticks=settings.trading.exec.slippage_ticks
 )
 
 executor = SignalExecutor(trader, db_cfg, exec_cfg)
@@ -82,7 +98,6 @@ job() # 启动后立即先跑一次
 schedule.every().hour.at(":01").do(job) # 每个小时的第 1 分钟执行一次
 
 logging.info("Scheduler started. Waiting for the first run...")
-
 while True:
     schedule.run_pending()
     time.sleep(1)

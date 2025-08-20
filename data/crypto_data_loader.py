@@ -4,7 +4,10 @@ from binance.client import Client
 from datetime import datetime, timezone
 import numpy as np
 import time
-from config import binance_proxy
+# from config import binance_proxy
+
+from conf.settings_loader import settings
+binance_proxy = settings.binance.http_proxy
 
 class DataHandler:
     def __init__(self, api_key=None, api_secret=None):

@@ -11,26 +11,54 @@ from model.feature_generator import FeatureGenerator, FeatureProcessor
 from model.fit_pred import split_data, clean_xy, fit_predict_regression_model
 from model.signal_generator import SignalGenerator
 
-from config import (feature_config,
-                    feature_process_config,
-                    signal_config,
-                    target,
-                    load_symbols,
-                    tscv,
-                    reg_rf)
+from sklearn.ensemble import RandomForestRegressor
+from model.timeseries_cv import MultipleTimeSeriesCV
+
+# from config import (feature_config,
+#                     feature_process_config,
+#                     signal_config,
+#                     target,
+#                     load_symbols,
+#                     tscv,
+#                     reg_rf)
 
 pd.set_option('display.max_rows', None)
 pd.set_option('display.max_columns', None)
 pd.set_option('display.max_info_columns', 200)
 
 # --- 配置部分 ---
-INTERVAL = '1h'
-START_DELTA = timedelta(days=60)
-DB_PATH = 'data/crypto_data.db'
-MODEL_NAME = 'rf-reg'
-STRATEGY_NAME = 'zscore_atr_v1'
+from conf.settings_loader import settings
+
+feature_config = settings.features.model_dump()
+feature_process_config = settings.feature_process.model_dump()
+signal_config = settings.signal.model_dump()
+target = settings.data.symbols.target
+load_symbols = settings.data.symbols.load_symbols
+
+# CV & Model
+tscv = MultipleTimeSeriesCV(
+    train_length=settings.cv.train_length,
+    test_length=settings.cv.test_length,
+    lookahead=settings.cv.lookahead,
+    date_idx=settings.cv.date_idx
+)
+train_model = RandomForestRegressor(**settings.model.params)
+
+INTERVAL = settings.data.interval
+START_DELTA = timedelta(days=settings.data.start_delta_days)
+DB_PATH = settings.paths.db_path
+MODEL_NAME = settings.model.name
+STRATEGY_NAME = settings.signal.strategy_name
 target_col = 'target_1h'
-train_model = reg_rf
+
+
+# INTERVAL = '1h'
+# START_DELTA = timedelta(days=60)
+# DB_PATH = 'data/crypto_data.db'
+# MODEL_NAME = 'rf-reg'
+# STRATEGY_NAME = 'zscore_atr_v1'
+# target_col = 'target_1h'
+# train_model = reg_rf
 
 # === Step 1: 获取数据库连接和最新时间 ===
 def ensure_db_initialized():
@@ -159,15 +187,15 @@ def run_pipeline():
 
 if __name__ == '__main__':
 
-    from conf.settings_loader import settings
-
-    print(settings.features.model_dump())
+    # from conf.settings_loader import settings
+    #
+    # print(settings.binance.model_dump())
 
     # run_pipeline()
-    # conn, handler, symbols, model_start_date = ensure_db_initialized()
-    # df_processed, price_all = prepare_feature_data(conn, handler, symbols, ltarget, model_start_date)
-    #
-    # print(df_processed.info())
-    # print(price_all.info())
+    conn, handler, symbols, model_start_date = ensure_db_initialized()
+    df_processed, price_all = prepare_feature_data(conn, handler, symbols, target, model_start_date)
+
+    print(df_processed.info())
+    print(price_all.info())
 
 
