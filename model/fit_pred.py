@@ -24,6 +24,20 @@ def clean_xy(X, y):
 
     return X_clean, y_clean
 
+def fit_predict_last_line(model, X, y, train_length=24*7*4):
+
+    X_train = X.iloc[-1 - train_length:-1]
+    y_train = y[-1 - train_length:-1]
+    X_pred = X.iloc[-1:]
+    # y_test = y[-1:]
+
+    model.fit(X_train, y_train)
+    y_pred = model.predict(X_pred)
+
+    ts = X_pred.index[-1]
+
+    return {"timestamp": ts,
+            "y_pred": float(y_pred[-1])}
 
 def fit_predict_regression_model(model, X, y, cv):
     """

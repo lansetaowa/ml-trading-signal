@@ -7,6 +7,7 @@ from typing import Literal
 def get_connection(db_path='crypto_data.db'):
     return sqlite3.connect(db_path)
 
+# 初始化kline/predictions/signals这几个表
 def init_db(conn):
     cursor = conn.cursor()
 
@@ -22,6 +23,16 @@ def init_db(conn):
         PRIMARY KEY (symbol, datetime)
     )
     ''')
+
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS predictions (
+            symbol TEXT,
+            datetime TEXT,
+            predicted REAL,
+            model_name TEXT,
+            PRIMARY KEY (symbol, datetime)
+        )
+        ''')
 
     cursor.execute('''
     CREATE TABLE IF NOT EXISTS signals (
@@ -44,7 +55,10 @@ def init_db(conn):
 
     conn.commit()
 
-def upsert_df(df: pd.DataFrame, table: Literal['kline', 'signals'], conn):
+# 把一个df插入数据库，适用于kline/predictions/signals table
+def upsert_df(df: pd.DataFrame,
+              table: Literal['kline', 'predictions', 'signals'],
+              conn):
     cursor = conn.cursor()
 
     if table == 'kline':
@@ -61,6 +75,15 @@ def upsert_df(df: pd.DataFrame, table: Literal['kline', 'signals'], conn):
         df = df[['symbol', 'datetime', 'open', 'high', 'low', 'close', 'volume']].copy()
         df['datetime'] = pd.to_datetime(df['datetime'], utc=True).dt.tz_convert(None).astype(str)
 
+    elif table == 'predictions':
+        insert_sql = """
+            INSERT INTO predictions (symbol, datetime, predicted, model_name)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(symbol, datetime) DO UPDATE SET
+                predicted=excluded.predicted
+            """
+        df = df[['symbol','datetime','predicted','model_name']].copy()
+        df['datetime'] = pd.to_datetime(df['datetime'], utc=True).dt.tz_convert(None).astype(str)
 
     elif table == 'signals':
         # 仅更新actuals列，更新之前未完成的bar信息
@@ -88,6 +111,27 @@ def upsert_df(df: pd.DataFrame, table: Literal['kline', 'signals'], conn):
     cursor.executemany(insert_sql, df.values.tolist())
     conn.commit()
 
+# 用于插入一行新的prediction
+def upsert_prediction_row(conn,
+                          symbol: str,
+                          ts,
+                          predicted: float,
+                          model_name: str):
+    sql = """
+    INSERT INTO predictions (symbol, datetime, predicted, model_name)
+    VALUES (?, ?, ?, ?)
+    ON CONFLICT(symbol, datetime) DO UPDATE SET
+        predicted=excluded.predicted
+    """
+    conn.execute(sql,
+                 (symbol,
+                   str(pd.to_datetime(ts).tz_localize('UTC').tz_convert(None)),
+                   predicted,
+                   model_name
+                  )
+                 )
+    conn.commit()
+
 def get_last_timestamp(conn, table: str) -> pd.Timestamp | None:
     query = f'''
     SELECT MAX(datetime) as max_dt FROM {table}
@@ -95,6 +139,29 @@ def get_last_timestamp(conn, table: str) -> pd.Timestamp | None:
     df = pd.read_sql_query(query, conn)
 
     return pd.to_datetime(df['max_dt'].iloc[0]) if pd.notnull(df['max_dt'].iloc[0]) else None
+
+# === 新增：读取最近 lookback 小时的预测历史（供生成最新信号） ===
+def fetch_predictions_history(conn,
+                              symbol: str,
+                              until_dt: pd.Timestamp,
+                              lookback_hours: int) -> pd.DataFrame:
+    sql = """
+    SELECT datetime, predicted
+    FROM predictions
+    WHERE symbol = ?
+      AND datetime <= ?
+      AND datetime >= datetime(?, '-' || ? || ' hours')
+    ORDER BY datetime
+    """
+    df = pd.read_sql_query(
+        sql, conn,
+        params=(symbol,
+                str(pd.to_datetime(until_dt).tz_localize('UTC').tz_convert(None)),
+                str(pd.to_datetime(until_dt).tz_localize('UTC').tz_convert(None)),
+                lookback_hours),
+        parse_dates=['datetime']
+    )
+    return df.set_index('datetime').sort_index()
 
 if __name__ == '__main__':
     # from data.crypto_data_loader import load_multi_symbol_data, DataHandler

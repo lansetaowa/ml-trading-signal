@@ -32,7 +32,7 @@ class MultipleTimeSeriesCV:
         n_dates = len(unique_dates)
         days = sorted(unique_dates, reverse=True)
 
-        n_splits= (n_dates - self.train_length - self.lookahead) // (self.test_length + self.lookahead)
+        n_splits= (n_dates - self.train_length - self.lookahead) // self.test_length
 
         split_idx = []
         for i in range(n_splits):
