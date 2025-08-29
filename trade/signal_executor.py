@@ -396,34 +396,35 @@ class SignalExecutor:
                 self._set_tp_sl_limit("SHORT", entry, atr_val)
 
 if __name__ == '__main__':
-    from config import BINANCE_API_KEY, BINANCE_API_SECRET
-    trader = BinanceFutureTrader(api_key=BINANCE_API_KEY, api_secret=BINANCE_API_SECRET)
-
-    # 2) 配置数据库与执行参数（按需修改列名/表名/路径）
-    db_cfg = DBConfig(
-        db_path="../data/crypto_data.db",  # ← 改成你的 SQLite 路径
-        signals_table="signals",
-        klines_table="kline",
-        signals_symbol_col="symbol",
-        signals_value_col="final_signal",
-        klines_symbol_col="symbol",
-        k_open_col="open",
-        k_high_col="high",
-        k_low_col="low",
-        k_close_col="close",
-        k_time_col="datetime",
-    )
-
-    exec_cfg = ExecConfig(
-        symbol="ETHUSDT",
-        dualSidePosition=True,  # 当前是双向
-        use_balance_ratio=0.5,  # 用多少比例的余额开仓
-        atr_period=12,
-        atr_k=1.5,
-        slippage_ticks=2
-    )
-
-    exec = SignalExecutor(trader=trader, db_cfg=db_cfg, exec_cfg=exec_cfg)
+    pass
+    # from config import BINANCE_API_KEY, BINANCE_API_SECRET
+    # trader = BinanceFutureTrader(api_key=BINANCE_API_KEY, api_secret=BINANCE_API_SECRET)
+    #
+    # # 2) 配置数据库与执行参数（按需修改列名/表名/路径）
+    # db_cfg = DBConfig(
+    #     db_path="../data/crypto_data.db",  # ← 改成你的 SQLite 路径
+    #     signals_table="signals",
+    #     klines_table="kline",
+    #     signals_symbol_col="symbol",
+    #     signals_value_col="final_signal",
+    #     klines_symbol_col="symbol",
+    #     k_open_col="open",
+    #     k_high_col="high",
+    #     k_low_col="low",
+    #     k_close_col="close",
+    #     k_time_col="datetime",
+    # )
+    #
+    # exec_cfg = ExecConfig(
+    #     symbol="ETHUSDT",
+    #     dualSidePosition=True,  # 当前是双向
+    #     use_balance_ratio=0.5,  # 用多少比例的余额开仓
+    #     atr_period=12,
+    #     atr_k=1.5,
+    #     slippage_ticks=2
+    # )
+    #
+    # exec = SignalExecutor(trader=trader, db_cfg=db_cfg, exec_cfg=exec_cfg)
     # print(exec._get_latest_signal())
     # df = exec._load_ohlcv()
     # atr = exec._atr_wilder(df, period=12)

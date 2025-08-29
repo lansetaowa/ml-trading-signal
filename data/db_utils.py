@@ -38,6 +38,11 @@ def init_db(conn):
     CREATE TABLE IF NOT EXISTS signals (
         symbol TEXT,
         datetime TEXT,
+        open REAL,
+        high REAL,
+        low REAL,
+        close REAL,
+        volume REAL,
         actuals REAL,
         predicted REAL,
         zscore REAL,
@@ -83,26 +88,33 @@ def upsert_df(df: pd.DataFrame,
                 predicted=excluded.predicted
             """
         df = df[['symbol','datetime','predicted','model_name']].copy()
-        df['datetime'] = pd.to_datetime(df['datetime'], utc=True).dt.tz_convert(None).astype(str)
+        # df['datetime'] = pd.to_datetime(df['datetime'], utc=True).dt.tz_convert(None).astype(str)
+
 
     elif table == 'signals':
-        # 仅更新actuals列，更新之前未完成的bar信息
+
+        # 插入 signals 表，包含 OHLCV；冲突时只更新 actuals
         insert_sql = '''
             INSERT INTO signals
-            (symbol, datetime, actuals, predicted, zscore,
+            (symbol, datetime,
+             open, high, low, close, volume,
+             actuals, predicted, zscore,
              raw_signal, vol_filter, filtered_signal,
              position, signal_reversal, final_signal,
              model_name, strategy_name)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(symbol, datetime, model_name, strategy_name) DO UPDATE SET
                 actuals=excluded.actuals
         '''
-        df = df[['symbol', 'datetime', 'actuals', 'predicted', 'zscore',
+
+        df = df[['symbol', 'datetime',
+                 'open', 'high', 'low', 'close', 'volume',
+                 'actuals', 'predicted', 'zscore',
                  'raw_signal', 'vol_filter', 'filtered_signal',
                  'position', 'signal_reversal', 'final_signal',
                  'model_name', 'strategy_name']].copy()
 
-        # 统一成无 tz 的 UTC 字符串，避免主键冲突的“伪不同”
+        # 统一时间格式为 naive UTC string
         df['datetime'] = pd.to_datetime(df['datetime'], utc=True).dt.tz_convert(None).astype(str)
 
     else:
@@ -112,25 +124,25 @@ def upsert_df(df: pd.DataFrame,
     conn.commit()
 
 # 用于插入一行新的prediction
-def upsert_prediction_row(conn,
-                          symbol: str,
-                          ts,
-                          predicted: float,
-                          model_name: str):
-    sql = """
-    INSERT INTO predictions (symbol, datetime, predicted, model_name)
-    VALUES (?, ?, ?, ?)
-    ON CONFLICT(symbol, datetime) DO UPDATE SET
-        predicted=excluded.predicted
-    """
-    conn.execute(sql,
-                 (symbol,
-                   str(pd.to_datetime(ts).tz_localize('UTC').tz_convert(None)),
-                   predicted,
-                   model_name
-                  )
-                 )
-    conn.commit()
+# def upsert_prediction_row(conn,
+#                           symbol: str,
+#                           ts,
+#                           predicted: float,
+#                           model_name: str):
+#     sql = """
+#     INSERT INTO predictions (symbol, datetime, predicted, model_name)
+#     VALUES (?, ?, ?, ?)
+#     ON CONFLICT(symbol, datetime) DO UPDATE SET
+#         predicted=excluded.predicted
+#     """
+#     conn.execute(sql,
+#                  (symbol,
+#                    str(pd.to_datetime(ts).tz_localize('UTC').tz_convert(None)),
+#                    predicted,
+#                    model_name
+#                   )
+#                  )
+#     conn.commit()
 
 def get_last_timestamp(conn, table: str) -> pd.Timestamp | None:
     query = f'''

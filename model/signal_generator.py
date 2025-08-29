@@ -8,8 +8,8 @@ class SignalGenerator:
     def __init__(self, config):
 
         """
-        pred_df must contain: actuals, predicted, with datetime index
-        price_df must contain: open, high, low, close, volume, with datetime index
+        pred_df must contain: predicted, with datetime index
+        price_df must contain: open, high, low, close, volume, with datetime, symbol index
 
         they must be about the same symbol
         """

@@ -193,6 +193,11 @@ def backfill_predictions_from(handler,
     pred_df['symbol'] = target
     pred_df['model_name'] = MODEL_NAME
 
+    # 5) 统一 datetime 为 string 格式
+    pred_df = pred_df.reset_index().rename(columns={'index': 'datetime'})
+    pred_df['datetime'] = pd.to_datetime(pred_df['datetime'], utc=True).dt.tz_convert(None).dt.strftime(
+        '%Y-%m-%d %H:%M:%S')
+
     return pred_df
 
 # === Step 4-3: 只预测最后一条 ===
@@ -223,7 +228,19 @@ def predict_latest(handler,
     # 只预测最后一行
     out = fit_predict_last_line(train_model, X_clean, y_clean, train_length=train_windows)
 
-    return out
+    ts = pd.to_datetime(out['timestamp'], utc=True).tz_convert(None)
+    # 保证到小时：强制 floor 到小时
+    ts = ts.floor('H')
+    dt_str = ts.strftime('%Y-%m-%d %H:%M:%S')
+
+    latest = pd.DataFrame({
+        'symbol': [target],
+        'datetime': [dt_str],
+        'predicted': [out['y_pred']],
+        'model_name': [MODEL_NAME],
+    })
+
+    return latest
 
 # === Step 5: 预测存入predictions表 ===
 def store_predictions(df_pred, conn):
@@ -278,8 +295,8 @@ def generate_latest_signal_from_predictions(symbol: str = None, lookback_hours: 
     pass
 
 # === Step 7: 信号结果存入数据库 signal 表 ===
-def store_signals(df_signal_final, conn):
-    upsert_df(df_signal_final, table='signals', conn=conn)
+# def store_signals(df_signal_final, conn):
+#     upsert_df(df_signal_final, table='signals', conn=conn)
 
 # === 综合上述几步 ===
 def run_pipeline():
@@ -318,6 +335,13 @@ if __name__ == '__main__':
     # print(df_processed.info())
     # print(price_all.info())
 
-    print(settings.cv.model_dump())
+    # print(settings.cv.model_dump())
+    handler = DataHandler()
 
+    latest = predict_latest(handler=handler,
+                                     symbols=load_symbols,
+                                     target=target,
+                                     buffer_windows=300,
+                                     train_windows=24 * 7 * 4)
+    print(latest)
 
