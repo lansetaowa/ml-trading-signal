@@ -7,21 +7,20 @@ import matplotlib.dates as mdates
 from data.db_utils import get_connection
 DB_PATH = '../data/crypto_data.db'
 
-from config import target
+# from config import target
+
+from conf.settings_loader import settings
+target = settings.data.symbols.target # 预测目标symbol
 
 def plot_recent_signals(limit = 24*3, strategy_name='rf-reg'):
 
     query = f""" 
     SELECT
-    a.datetime, a.symbol, open, high, low, close, volume, final_signal
-    FROM
-    (SELECT * 
+    datetime, symbol, open, high, low, close, volume, final_signal
     FROM signals
     WHERE symbol=?
     ORDER BY datetime DESC 
-    LIMIT ?) a 
-    LEFT JOIN kline b
-    ON a.symbol=b.symbol and a.datetime = b.datetime
+    LIMIT ?
     """
 
     conn = get_connection(DB_PATH)

@@ -35,7 +35,7 @@ class DataSymbols(BaseModel):
         return self
 
 class DataConfig(BaseModel):
-    interval: Literal["1m","5m","15m","1h","4h","1d"] = "1h"
+    interval: Literal["1m","5m","15m","30m","1h","4h","1d"] = "1h"
     start_delta_days: int = 60
     model_start_from_now: bool = True
     symbols: DataSymbols
@@ -96,9 +96,17 @@ class TradingExecConfig(BaseModel):
     symbol: str
     dualSidePosition: bool = True
     use_balance_ratio: float = 0.95
+
+    # ATR 参数
     atr_period: int = 12
-    atr_k: float = 1.5
+    atr_k: float = 1.5                # 备用（当未指定下两者时生效）
+    atr_k_tp: Optional[float] = None  # 新：止盈 = atr_k_tp * ATR
+    atr_k_sl: Optional[float] = None  # 新：止损 = atr_k_sl * ATR
+
+    # 其它执行细节
     slippage_ticks: int = 2
+    max_position_close_retries: int = 5
+    position_retry_sleep_sec: float = 0.5
 
 class TradingSchedule(BaseModel):
     minute_at: int = 1  # 每小时第 minute_at 分，0-59

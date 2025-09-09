@@ -6,7 +6,7 @@
     - 先检查目前是否有仓位
         - 如果没有仓位，但是还有止盈或止损的委托，就取消它们
         - 再计算当前的atr（period=12），用于后续设置止盈止损
-            - ohlcv数据来源于klines表，排除最后一条数据，因为还不全
+            - ohlcv数据来源于signals表，排除最后一条数据，因为还不全
     - 如果是1：
         - 如果目前已有多仓，那么什么都不做
         - 如果目前已有空仓，那么先平空仓，再开多仓
@@ -36,26 +36,30 @@ from trade.future_trader import BinanceFutureTrader
 @dataclass
 class DBConfig:
     db_path: str
+    # 一律从 signals 表读取
     signals_table: str = "signals"
-    klines_table: str = "kline"
-    # 列名配置（按你自己的库结构调整）
     signals_symbol_col: str = "symbol"
     signals_value_col: str = "final_signal"           # 信号列名
-
-    klines_symbol_col: str = "symbol"
-    k_open_col: str = "open"
-    k_high_col: str = "high"
-    k_low_col: str = "low"
-    k_close_col: str = "close"
-    k_time_col: Optional[str] = "datetime"
+    s_time_col: str = "datetime" # signals 表里的时间列（字符串形式 'YYYY-MM-DD HH:MM:SS'）
+    s_open_col: str = "open"
+    s_high_col: str = "high"
+    s_low_col: str = "low"
+    s_close_col: str = "close"
+    s_volume_col: str = "volume"
 
 @dataclass
 class ExecConfig:
     symbol: str
     dualSidePosition: bool = True           # 当前是双向
     use_balance_ratio: float = 1.0          # 用全部余额
+
+    # ATR参数
     atr_period: int = 12
-    atr_k: float = 1.5
+    atr_k: float = 1.5   # 兼容旧配置：若下两者未提供，则使用此值
+    atr_k_tp: Optional[float] = None  # 新：止盈倍数（例 1.0）
+    atr_k_sl: Optional[float] = None  # 新：止损倍数（例 1.5）
+
+    # 其他
     slippage_ticks: int = 2                 # 触发后挂单限价的 tick 偏移，增强成交概率
     max_position_close_retries: int = 5     # 下单后读取仓位重试次数
     position_retry_sleep_sec: float = 0.5  # 每次重试间隔
@@ -74,14 +78,17 @@ class SignalExecutor:
         返回：1 / -1 / 0 / None
         """
         conn = sqlite3.connect(self.db.db_path)
-        q = f"""
-            SELECT {self.db.signals_value_col}
-            FROM {self.db.signals_table}
-            WHERE {self.db.signals_symbol_col} = ?
-            ORDER BY datetime DESC
-            LIMIT 1
-        """
-        row = pd.read_sql_query(q, conn, params=[self.cfg.symbol])
+        try:
+            q = f"""
+                SELECT {self.db.signals_value_col}
+                FROM {self.db.signals_table}
+                WHERE {self.db.signals_symbol_col} = ?
+                ORDER BY {self.db.s_time_col} DESC
+                LIMIT 1
+            """
+            row = pd.read_sql_query(q, conn, params=[self.cfg.symbol])
+        finally:
+            conn.close()
 
         if row.empty:
             return None
@@ -91,8 +98,6 @@ class SignalExecutor:
         except Exception:
             # 兼容 float/bool
             return int(float(val))
-        finally:
-            conn.close()
 
     def _load_ohlcv(self) -> pd.DataFrame:
         """
@@ -102,35 +107,29 @@ class SignalExecutor:
         conn = sqlite3.connect(self.db.db_path)
         try:
             q = f"""
-                SELECT *
-                FROM {self.db.klines_table}
-                WHERE {self.db.klines_symbol_col} = ?
-                ORDER BY {self.db.k_time_col if self.db.k_time_col else 'ROWID'} ASC
+                SELECT {self.db.s_time_col} AS datetime,
+                       {self.db.s_open_col} AS open,
+                       {self.db.s_high_col} AS high,
+                       {self.db.s_low_col}  AS low,
+                       {self.db.s_close_col} AS close,
+                       {self.db.s_volume_col} AS volume
+                FROM {self.db.signals_table}
+                WHERE {self.db.signals_symbol_col} = ?
+                ORDER BY {self.db.s_time_col} ASC
             """
             df = pd.read_sql_query(q, conn, params=[self.cfg.symbol])
 
             if df.empty:
-                raise ValueError("klines 表为空")
+                raise ValueError("signals 表为空，无法计算 ATR")
 
             # 去掉最后一条未完成 bar
             if len(df) > 1:
                 df = df.iloc[:-1, :]
 
             # 统一列名访问
-            rename_map = {
-                self.db.k_open_col: "open",
-                self.db.k_high_col: "high",
-                self.db.k_low_col: "low",
-                self.db.k_close_col: "close",
-            }
-            df = df.rename(columns=rename_map)
-            for col in ["open", "high", "low", "close"]:
-                if col not in df.columns:
-                    raise ValueError(f"klines 缺少列: {col}")
+            for col in ["open", "high", "low", "close", "volume"]:
                 df[col] = pd.to_numeric(df[col], errors="coerce")
-
             df = df.dropna(subset=["open", "high", "low", "close"])
-
             return df
         finally:
             conn.close()
@@ -156,6 +155,8 @@ class SignalExecutor:
 
     def _compute_atr(self) -> float:
         df = self._load_ohlcv()
+        if len(df) < max(self.cfg.atr_period + 1, 20):
+            raise ValueError(f"可用于 ATR 的 OHLCV 过少：{len(df)} 行")
         atr = self._atr_wilder(df, self.cfg.atr_period)
         if atr.dropna().empty:
             raise ValueError("ATR 计算失败（有效数据不足）")
@@ -188,9 +189,7 @@ class SignalExecutor:
         """
         open_orders = self.trader.get_open_orders(symbol=self.cfg.symbol)
         types_to_cancel = {
-            "TAKE_PROFIT", "TAKE_PROFIT_MARKET",
-            "STOP", "STOP_MARKET",
-            "TRAILING_STOP_MARKET"
+            "TAKE_PROFIT", "TAKE_PROFIT_MARKET","STOP", "STOP_MARKET","TRAILING_STOP_MARKET"
         }
         for od in open_orders:
             if od.get("type") in types_to_cancel:
@@ -264,11 +263,12 @@ class SignalExecutor:
 
     def _set_tp_sl_limit(self, position_side: str, entry_price: float, atr: float):
         """
-        依据 entry ± k*ATR 设置 **限价** TP/SL：
-        - LONG:  TP stop=entry + k*ATR, price = stop - slippage_ticks*tick
-                 SL stop=entry - k*ATR, price = stop - slippage_ticks*tick
-        - SHORT: TP stop=entry - k*ATR, price = stop + slippage_ticks*tick
-                 SL stop=entry + k*ATR, price = stop + slippage_ticks*tick
+        依据 entry ± k*ATR 设置 **限价** TP/SL
+        - 使用 k_tp = atr_k_tp or atr_k, k_sl = atr_k_sl or atr_k
+        - LONG:  TP stop=entry + k_tp*ATR,  price=stop - slippage*tick
+                 SL stop=entry - k_sl*ATR,  price=stop - slippage*tick
+        - SHORT: TP stop=entry - k_tp*ATR,  price=stop + slippage*tick
+                 SL stop=entry + k_sl*ATR,  price=stop + slippage*tick
         数量使用当前持仓数量（全平）。
         """
         tick = self.trader.get_tick_size(self.cfg.symbol)
@@ -282,15 +282,16 @@ class SignalExecutor:
             raise ValueError("设置 TP/SL 时未检测到持仓数量 > 0")
         qty = self.trader.round_to_size(qty, step)
 
-        k = self.cfg.atr_k
+        k_tp = self.cfg.atr_k_tp if self.cfg.atr_k_tp is not None else self.cfg.atr_k
+        k_sl = self.cfg.atr_k_sl if self.cfg.atr_k_sl is not None else self.cfg.atr_k
+
         if position_side == "LONG":
-            tp_stop = entry_price + k * atr
+            tp_stop = entry_price + k_tp * atr
             tp_price = tp_stop - self.cfg.slippage_ticks * tick
-            sl_stop = entry_price - k * atr
+            sl_stop = entry_price - k_sl * atr
             sl_price = sl_stop - self.cfg.slippage_ticks * tick
 
-            print(
-                f"→ LONG TP @ stop≈{tp_stop:.4f}, price≈{tp_price:.4f}; SL @ stop≈{sl_stop:.4f}, price≈{sl_price:.4f}")
+            print(f"→ LONG TP @ stop≈{tp_stop:.4f}, price≈{tp_price:.4f}; SL @ stop≈{sl_stop:.4f}, price≈{sl_price:.4f}")
             self.trader.set_take_profit_limit(
                 symbol=self.cfg.symbol,
                 stop_price=tp_stop,
@@ -309,13 +310,12 @@ class SignalExecutor:
             )
 
         else:  # SHORT
-            tp_stop = entry_price - k * atr
+            tp_stop = entry_price - k_tp * atr
             tp_price = tp_stop + self.cfg.slippage_ticks * tick
-            sl_stop = entry_price + k * atr
+            sl_stop = entry_price + k_sl * atr
             sl_price = sl_stop + self.cfg.slippage_ticks * tick
 
-            print(
-                f"→ SHORT TP @ stop≈{tp_stop:.4f}, price≈{tp_price:.4f}; SL @ stop≈{sl_stop:.4f}, price≈{sl_price:.4f}")
+            print(f"→ SHORT TP @ stop≈{tp_stop:.4f}, price≈{tp_price:.4f}; SL @ stop≈{sl_stop:.4f}, price≈{sl_price:.4f}")
             self.trader.set_take_profit_limit(
                 symbol=self.cfg.symbol,
                 stop_price=tp_stop,
@@ -333,7 +333,7 @@ class SignalExecutor:
                 quantity=qty
             )
 
-    # ---------------- Main orchestration ----------------
+    # ---------------- Main ----------------
 
     def run_once(self):
         # symbol = self.cfg.symbol
@@ -397,35 +397,39 @@ class SignalExecutor:
 
 if __name__ == '__main__':
     pass
-    # from config import BINANCE_API_KEY, BINANCE_API_SECRET
-    # trader = BinanceFutureTrader(api_key=BINANCE_API_KEY, api_secret=BINANCE_API_SECRET)
+    # from conf.settings_loader import settings
+    # # from config import BINANCE_API_KEY, BINANCE_API_SECRET
+    # trader = BinanceFutureTrader(api_key=settings.binance.api_key,
+    #     api_secret=settings.binance.api_secret)
     #
     # # 2) 配置数据库与执行参数（按需修改列名/表名/路径）
     # db_cfg = DBConfig(
-    #     db_path="../data/crypto_data.db",  # ← 改成你的 SQLite 路径
-    #     signals_table="signals",
-    #     klines_table="kline",
-    #     signals_symbol_col="symbol",
-    #     signals_value_col="final_signal",
-    #     klines_symbol_col="symbol",
-    #     k_open_col="open",
-    #     k_high_col="high",
-    #     k_low_col="low",
-    #     k_close_col="close",
-    #     k_time_col="datetime",
-    # )
+    #     db_path= "../data/crypto_data.db",
+    #     # 一律从 signals 表读取
+    #     signals_table= "signals",
+    #     signals_symbol_col= "symbol",
+    #     signals_value_col= "final_signal",           # 信号列名
+    #     s_time_col= "datetime", # signals 表里的时间列（字符串形式 'YYYY-MM-DD HH:MM:SS'）
+    #     s_open_col= "open",
+    #     s_high_col= "high",
+    #     s_low_col= "low",
+    #     s_close_col= "close",
+    #     s_volume_col= "volume"
+    #     )
     #
     # exec_cfg = ExecConfig(
-    #     symbol="ETHUSDT",
-    #     dualSidePosition=True,  # 当前是双向
-    #     use_balance_ratio=0.5,  # 用多少比例的余额开仓
+    #     symbol='ETHUSDT',
+    #     dualSidePosition=True,
+    #     use_balance_ratio=1,
     #     atr_period=12,
-    #     atr_k=1.5,
+    #     atr_k=1.5,  # 仍可保留（作为后备）
+    #     atr_k_tp=1.0,  # ← 止盈
+    #     atr_k_sl=1.5,  # ← 止损
     #     slippage_ticks=2
     # )
-    #
+    # #
     # exec = SignalExecutor(trader=trader, db_cfg=db_cfg, exec_cfg=exec_cfg)
-    # print(exec._get_latest_signal())
+    # # print(exec._get_latest_signal())
     # df = exec._load_ohlcv()
     # atr = exec._atr_wilder(df, period=12)
     # print(atr.info())

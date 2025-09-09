@@ -63,7 +63,7 @@ class FeatureGenerator:
 
     def compute_momentum_features(self, cut_q = 0.0001):
         for lag in self.lags:
-            self.df[f'return_{lag}h'] = (self.df.groupby(level='symbol').close
+            self.df[f'return_{lag}bar'] = (self.df.groupby(level='symbol').close
                                         .pct_change(lag)
                                         .pipe(lambda x: x.clip(lower=x.quantile(cut_q),
                                                                upper=x.quantile(1 - cut_q)))
@@ -71,36 +71,36 @@ class FeatureGenerator:
 
         for t in [1, 2, 3]:  # 滞后倍数
             for lag in self.lags:  # 原始收益窗口
-                self.df[f'return_{lag}h_lag{t}'] = (self.df.groupby(level='symbol')
-                                                   [f'return_{lag}h'].shift(t * lag))
+                self.df[f'return_{lag}bar_lag{t}'] = (self.df.groupby(level='symbol')
+                                                   [f'return_{lag}bar'].shift(t * lag))
 
         return self
 
     def compute_volatility_features(self):
 
         self.df['std_ret'] = (
-            self.df.groupby(level='symbol')['return_1h']
+            self.df.groupby(level='symbol')['return_1bar']
             .rolling(window=self.vol_window)
             .std()
             .reset_index(level=0, drop=True)
         )
 
         self.df['skew_ret'] = (
-            self.df.groupby(level='symbol')['return_1h']
+            self.df.groupby(level='symbol')['return_1bar']
             .rolling(window=self.vol_window)
             .skew()
             .reset_index(level=0, drop=True)
         )
 
         self.df['kurtosis_ret'] = (
-            self.df.groupby(level='symbol')['return_1h']
+            self.df.groupby(level='symbol')['return_1bar']
             .rolling(window=self.vol_window)
             .kurt()
             .reset_index(level=0, drop=True)
         )
 
         self.df['max_ret'] = (
-            self.df.groupby(level='symbol')['return_1h']
+            self.df.groupby(level='symbol')['return_1bar']
             .rolling(window=self.vol_window)
             .max()
             .reset_index(level=0, drop=True)
@@ -117,7 +117,7 @@ class FeatureGenerator:
 
     def compute_target_cols(self):
         for t in self.rt_targets:
-            self.df[f'target_{t}h'] = self.df.groupby(level='symbol')[f'return_{t}h'].shift(-t)
+            self.df[f'target_{t}bar'] = self.df.groupby(level='symbol')[f'return_{t}bar'].shift(-t)
         return self
 
     def compute_time_dummies(self):
@@ -216,7 +216,7 @@ class FeatureGenerator:
 
         target_data = self.df.loc[target_symbol].copy()
 
-        selected_features = ['log_dollar_vol', 'return_1h', 'return_2h', 'return_4h', 'std_ret', 'std_dollar_vol',
+        selected_features = ['log_dollar_vol', 'return_1bar', 'return_2bar', 'return_4bar', 'std_ret', 'std_dollar_vol',
                              'rsi', 'bb_high', 'bb_low', 'adx', 'plus_di', 'minus_di', 'bop']
 
         other_symbols = [sym for sym in self.other_symbols if sym != target_symbol]
@@ -270,7 +270,7 @@ if __name__ == '__main__':
 
     handler = DataHandler()
     symbols = list(set([target]+load_symbols))
-    prices = load_multi_symbol_data(handler, symbols, interval='1h', start_str='2025-07-01 00:00:00')
+    prices = load_multi_symbol_data(handler, symbols, interval='30m', start_str='2025-07-01 00:00:00')
 
     df_features = (
         FeatureGenerator(feature_config)

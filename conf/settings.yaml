@@ -77,13 +77,17 @@ signal:
   strategy_name: "zscore_atr_v1"
 
 trading:
-  enabled: true                 # 也允许用环境变量 TRADING_ENABLED 覆盖
+  enabled: True
   exec:
     symbol: "ETHUSDT"
-    dualSidePosition: true
+    dualSidePosition: True
     use_balance_ratio: 0.95
     atr_period: 8
     atr_k: 1.5
+    atr_k_tp: 1.0          # 新：止盈 1×ATR
+    atr_k_sl: 1.5          # 新：止损 1.5×ATR
     slippage_ticks: 2
+    max_position_close_retries: 5
+    position_retry_sleep_sec: 0.5
   schedule:
-    minute_at: 1                # 每小时第 1 分钟跑（hourly_runner 用）
+    minute_at: 1

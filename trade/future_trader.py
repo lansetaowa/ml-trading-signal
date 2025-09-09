@@ -11,7 +11,10 @@ from binance.enums import (
 
 import time
 
-from config import binance_proxy
+# from config import binance_proxy
+
+from conf.settings_loader import settings
+binance_proxy = settings.binance.http_proxy
 
 class BinanceFutureTrader:
 
@@ -497,8 +500,8 @@ class BinanceFutureTrader:
         )
 
 if __name__ == '__main__':
-    from config import BINANCE_API_KEY, BINANCE_API_SECRET
-    bn_future_trader = BinanceFutureTrader(api_key=BINANCE_API_KEY, api_secret=BINANCE_API_SECRET)
+    # from config import BINANCE_API_KEY, BINANCE_API_SECRET
+    # bn_future_trader = BinanceFutureTrader(api_key=BINANCE_API_KEY, api_secret=BINANCE_API_SECRET)
 
     symbol = 'ETHUSDT'
     # print(bn_future_trader.get_available_balance())

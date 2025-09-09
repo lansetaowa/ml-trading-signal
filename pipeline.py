@@ -1,14 +1,17 @@
 import warnings
+from cgitb import handler
+
 warnings.filterwarnings('ignore')
 
 import pandas as pd
+import numpy as np
 from datetime import datetime, timedelta, timezone
 
 from data.crypto_data_loader import DataHandler, load_multi_symbol_data
-from data.db_utils import get_connection, upsert_df, fetch_predictions_history
+from data.db_utils import get_connection, upsert_df, fetch_predictions_history, get_last_timestamp, init_db
 
 from model.feature_generator import FeatureGenerator, FeatureProcessor
-from model.fit_pred import split_data, clean_xy, fit_predict_regression_model, fit_predict_last_line
+from model.fit_pred import split_data, clean_xy, fit_predict_regression_model
 from model.signal_generator import SignalGenerator
 
 from sklearn.ensemble import RandomForestRegressor
@@ -21,12 +24,12 @@ pd.set_option('display.max_info_columns', 200)
 # --- 配置部分 ---
 from conf.settings_loader import settings
 
-feature_config = settings.features.model_dump()
-feature_process_config = settings.feature_process.model_dump()
-signal_config = settings.signal.model_dump()
+feature_config = settings.features.model_dump() # 特征工程配置
+feature_process_config = settings.feature_process.model_dump() # 特征清洗配置
+signal_config = settings.signal.model_dump() # 信号生成配置
 target = settings.data.symbols.target # 预测目标symbol
 load_symbols = settings.data.symbols.load_symbols # 伴随的作为特征的symbols
-symbols = list(set([target]+load_symbols)) # 实际获取哪些symbol的数据（目标和伴随有可能重复，要去重）
+all_symbols = list(set([target]+load_symbols)) # 实际获取哪些symbol的数据（目标和伴随有可能重复，要去重）
 
 # CV & Model
 tscv = MultipleTimeSeriesCV(
@@ -35,84 +38,27 @@ tscv = MultipleTimeSeriesCV(
     lookahead=settings.cv.lookahead,
     date_idx=settings.cv.date_idx
 )
-train_model = RandomForestRegressor(**settings.model.params)
+train_length = settings.cv.train_length # 预测用bar的数量
+train_model = RandomForestRegressor(**settings.model.params) # 预测模型配置
 
-INTERVAL = settings.data.interval
+# INTERVAL = settings.data.interval # 在哪个level的时间间隔上预测, 1h/30m/15m etc.
+INTERVAL = '30m'
 START_DELTA = timedelta(days=settings.data.start_delta_days)
 DB_PATH = settings.paths.db_path
 MODEL_NAME = settings.model.name
 STRATEGY_NAME = settings.signal.strategy_name
-target_col = 'target_1h'
+target_col = 'target_1bar'
 
 # === Step 1: 获取数据库连接和最新时间 ===
 def ensure_db_initialized():
     handler = DataHandler()
-    # symbols = list(set([target]+load_symbols)) # 获取哪些symbol的数据
     conn = get_connection(DB_PATH)
     # init_db(conn)
-    # model_start_date = (datetime.utcnow() - START_DELTA).strftime('%Y-%m-%d %H:%M:%S')
 
     return conn, handler
 
-# === Step 2: 回溯 N 天并写到“此刻”为止（允许未完结K线，后续覆盖） ===
-def fetch_and_store_backfill_no_lag(conn, handler, symbols, backfill_hours=4):
-
-    now_utc = datetime.now(timezone.utc).replace(second=0, microsecond=0)  # 到当前时刻（分级对齐）
-    start_dt = now_utc - timedelta(hours=backfill_hours)
-
-    start_str = start_dt.strftime('%Y-%m-%d %H:%M:%S')
-    end_str   = now_utc.strftime('%Y-%m-%d %H:%M:%S')
-
-    print(f'Fetching price data backfill: [{start_str}, {end_str}] for {len(symbols)} symbols ...')
-
-    df_price = load_multi_symbol_data(handler, symbols, start_str=start_str)
-    if df_price.empty:
-        print('No price data returned.')
-        return
-
-    # 规范列、去重（同一(symbol, datetime)取最后一条，便于覆盖半成品）
-    df_price = (df_price
-                .reset_index()
-                [['symbol', 'datetime', 'open', 'high', 'low', 'close', 'volume']]
-                .sort_values(['symbol', 'datetime']))
-    df_price = df_price.drop_duplicates(subset=['symbol', 'datetime'], keep='last')
-
-    print(f'Upserting {len(df_price)} rows into kline (backfill {backfill_hours}h, no lag, allow provisional bars)...')
-    upsert_df(df_price, table='kline', conn=conn)
-
-# === Step 3-1: 读取最近 N 天的数据用于建模 ===
-def prepare_feature_data(handler, symbols, target, model_start_date):
-
-    # 数据来自从币安api实时获取
-    price_all = load_multi_symbol_data(handler, symbols, start_str=model_start_date)
-
-    df_features = (
-        FeatureGenerator(config=feature_config)
-        .load_data(price_all)
-        .select_symbols(target_symbol=target)
-        .compute_volume_features()
-        .compute_momentum_features()
-        .compute_volatility_features()
-        .compute_target_cols()
-        .compute_time_dummies()
-        .compute_tech_indicators()
-        .compute_candle_patterns()
-        .get_single_symbol_data(target_symbol=target)
-    )
-
-    df_processed = (
-        FeatureProcessor(config=feature_process_config)
-        .load_data(df_features)
-        .scale_metrics()
-        .drop_cols()
-        .df
-    )
-    return df_processed, price_all
-
-# === Step 3-2: 从给定起点拉价并做特征工程（带缓冲窗口） ===
+# === Step 2: 从给定起点拉价并做特征工程（带缓冲窗口） ===
 def prepare_feature_data_from_start(handler,
-                                    symbols,
-                                    target,
                                     start_str,
                                     buffer_windows=300,
                                     train_windows=24*7*4):
@@ -121,10 +67,15 @@ def prepare_feature_data_from_start(handler,
     返回: (df_processed, price_all)；df_processed 已裁掉 warmup，只保留 start_str 及之后。
     """
     start_dt = pd.to_datetime(start_str)
-    start_with_buffer = (start_dt - pd.Timedelta(hours=buffer_windows+train_windows)
+    start_with_buffer = (start_dt - pd.Timedelta(
+                                                hours=(buffer_windows+train_windows)*(interval_minutes(INTERVAL)/60)
+                                                )
                          ).strftime('%Y-%m-%d %H:%M:%S')
 
-    price_all = load_multi_symbol_data(handler, symbols, start_str=start_with_buffer)
+    price_all = load_multi_symbol_data(handler,
+                                       symbols=all_symbols,
+                                       start_str=start_with_buffer,
+                                       interval=INTERVAL)
     df_features = (
         FeatureGenerator(config=feature_config)
         .load_data(price_all)
@@ -149,21 +100,18 @@ def prepare_feature_data_from_start(handler,
     cut = (start_dt - pd.Timedelta(hours=train_windows)
                          ).strftime('%Y-%m-%d %H:%M:%S')
     df_processed = df_processed.loc[pd.to_datetime(cut):]
-    return df_processed, price_all
+    return df_processed
 
-# === Step 4-1: 建模 + 预测（时间交叉验证）===
-def train_and_predict(df_processed, model, cv):
+# === Step 3: 一次性补全从 start_str 到最近一条的所有预测, 建模 + 预测（时间交叉验证）===
+def _train_and_predict(df_processed, model, cv):
     X, y = split_data(df_processed)
     X_clean, y_clean = clean_xy(X, y[target_col])
     pred_df = fit_predict_regression_model(model=model, X=X_clean, y=y_clean, cv=cv)
 
     return pred_df
 
-# === Step 4-2:一次性补全从 start_str 到最近一条的所有预测 ===
 def backfill_predictions_from(handler,
                               start_str: str,
-                              symbols,
-                              target,
                               buffer_windows: int = 300,
                               train_windows: int = 24*7*4):
     """
@@ -171,17 +119,15 @@ def backfill_predictions_from(handler,
     将从 start_str 起能形成的所有预测，写入 predictions（仅 predicted）。
     """
     # 1) 特征工程（带 warmup）
-    df_processed, _ = prepare_feature_data_from_start(
+    df_processed = prepare_feature_data_from_start(
         handler=handler,
-        symbols=symbols,
-        target=target,
         start_str=start_str,
         buffer_windows=buffer_windows,
         train_windows=train_windows
     )
 
     # 2) 建模 + 预测（滚动CV）
-    pred_df = train_and_predict(df_processed, model=train_model, cv=tscv)
+    pred_df = _train_and_predict(df_processed, model=train_model, cv=tscv)
 
     if pred_df is None or pred_df.empty:
         print("[backfill] no predictions generated")
@@ -200,68 +146,70 @@ def backfill_predictions_from(handler,
 
     return pred_df
 
-# === Step 4-3: 只预测最后一条 ===
-def predict_latest(handler,
-                   symbols,
-                   target,
-                   buffer_windows: int = 300,
-                   train_windows: int = 24 * 7 * 4):
+INTERVAL_MIN  = {"1h": 60,  "30m": 30,   "15m": 15}
+INTERVAL_FREQ = {"1h": "H", "30m": "30T", "15m": "15T"}
+
+def interval_minutes(interval: str) -> int:
+    return INTERVAL_MIN.get(interval, 60)
+
+def floor_to_interval(ts: pd.Timestamp, interval: str) -> pd.Timestamp:
+    return pd.to_datetime(ts, utc=True).tz_convert(None).floor(INTERVAL_FREQ.get(interval, "H"))
+
+# === Step 4: 生成交易信号 ===
+def _to_utc_naive_str(ts):
+    """统一把 Timestamp/str 转为 'YYYY-MM-DD HH:MM:SS'（naive UTC）的字符串"""
+    return (pd.to_datetime(ts, utc=True)
+            .tz_convert(None)
+            .strftime('%Y-%m-%d %H:%M:%S'))
+
+def _add_actuals_from_close(df_with_close: pd.DataFrame) -> pd.DataFrame:
+    """actuals_t = close_{t+1}/close_t - 1；最后一行因无 t+1 为 NaN"""
+    df = df_with_close.copy()
+    df['actuals'] = df['close'].shift(-1) / df['close'] - 1
+    return df
+
+# 从 DB 的历史预测构造整段 signals（仅返回，不落库）
+# 适用于“项目运行初期”需要把缺口一次性补齐的场景，也可以用于生成最近的signals，按缺口来决定
+def generate_signals_from_predictions(handler,
+                                      conn,
+                                      start_str: str) -> pd.DataFrame:
     """
-    只预测最近 1 小时并写入 predictions。
-    仍然先拉足够长的价格与特征，以保证最后一行可预测。
+    从 predictions 表读取 [start_str, now] 的历史预测，合并价格并生成一整段 signals（含 OHLCV、actuals）。
+    仅返回 DataFrame，不写库，便于 notebook 调试。
     """
-    start_str = (datetime.utcnow().replace(minute=0, second=0, microsecond=0)
-                 - timedelta(hours=2)
-                 ).strftime("%Y-%m-%d %H:%M:%S")
 
-    # 可直接复用你现有的 prepare_feature_data（按 settings.data.start_delta_days 回看）
-    df_processed, _ = prepare_feature_data_from_start(handler=handler,
-                                                      symbols=symbols,
-                                                      target=target,
-                                                      start_str=start_str,
-                                                      buffer_windows=buffer_windows,
-                                                      train_windows=train_windows)
+    # 1) 拉历史预测
+    until_dt = floor_to_interval(pd.Timestamp.now(
+                                                    tz=timezone.utc
+                                                ),
+                                 INTERVAL)
 
-    X, y = split_data(df_processed)
-    X_clean, y_clean = clean_xy(X, y[target_col])
+    lookback_bars = int(np.ceil(
+                        (until_dt - pd.to_datetime(start_str)
+                         ).total_seconds() / (interval_minutes(INTERVAL)*60) )
+                        ) + signal_config['z_window'] # 由于z-score和计算position reversal，需要往前多取
 
-    # 只预测最后一行
-    out = fit_predict_last_line(train_model, X_clean, y_clean, train_length=train_windows)
+    pred_hist = fetch_predictions_history(conn,
+                                          symbol=target,
+                                          lookback_bars=lookback_bars)
 
-    ts = pd.to_datetime(out['timestamp'], utc=True).tz_convert(None)
-    # 保证到小时：强制 floor 到小时
-    ts = ts.floor('H')
-    dt_str = ts.strftime('%Y-%m-%d %H:%M:%S')
+    # 2) 拉价（含足够 buffer 以满足指标窗口/ATR）
+    atr_long = signal_config['atr_windows']['long']
+    price_start = (pred_hist.index.min() - pd.Timedelta(
+                                                hours=(interval_minutes(INTERVAL)/60) * atr_long
+                                                        )
+                   )  # 给 ATR 多一点缓冲
+    price_all = load_multi_symbol_data(handler,
+                                       symbols=all_symbols,
+                                       interval=INTERVAL,
+                                       start_str=_to_utc_naive_str(price_start))
 
-    latest = pd.DataFrame({
-        'symbol': [target],
-        'datetime': [dt_str],
-        'predicted': [out['y_pred']],
-        'model_name': [MODEL_NAME],
-    })
+    # 3) 组装 pred_df 传入 SignalGenerator（索引为 datetime，且带 symbol）
+    pred_df = pred_hist.copy()
+    pred_df['symbol'] = target
+    pred_df.index.name = 'datetime'
 
-    return latest
-
-# === Step 5: 预测存入predictions表 ===
-def store_predictions(df_pred, conn):
-    """
-    期望 df_pred: index 为 datetime 或有 datetime 列，且包含 'predicted'、以及 'symbol','model_name'
-    这个函数只把 (symbol, datetime, predicted, model_name) upsert 到 predictions
-    """
-    if df_pred is None or len(df_pred) == 0:
-        return
-
-    out = df_pred.copy()
-
-    cols = ['symbol', 'datetime', 'predicted', 'model_name']
-    missing = [c for c in cols if c not in out.columns]
-    if missing:
-        raise ValueError(f"store_predictions: missing columns {missing}")
-
-    upsert_df(out[cols], table='predictions', conn=conn)
-
-# === Step 6: 生成交易信号 ===
-def generate_signals(pred_df, price_all, target):
+    # 4) 生成信号（这一步保留 OHLCV，不再 drop）
     df_signal = (
         SignalGenerator(config=signal_config)
         .load_data(pred_df=pred_df, price_df=price_all)
@@ -274,52 +222,76 @@ def generate_signals(pred_df, price_all, target):
         .apply_min_signal_spacing(min_space=2)
     )
 
-    df_signal_final = df_signal.drop(columns=['open', 'high', 'low', 'close', 'volume']).copy()
-    df_signal_final = df_signal_final.reset_index()
-    df_signal_final['symbol'] = target
-    df_signal_final['model_name'] = MODEL_NAME
-    df_signal_final['strategy_name'] = STRATEGY_NAME
+    df_signal.dropna(inplace=True) # 去掉没有滚动zscore的记录
 
-    return df_signal_final[
-        ['symbol', 'datetime', 'actuals', 'predicted', 'zscore',
-         'raw_signal', 'vol_filter', 'filtered_signal',
-         'position', 'signal_reversal', 'final_signal',
-         'model_name', 'strategy_name']
-    ]
+    # 5) 补 actuals（来自 close 列）
+    df_signal = _add_actuals_from_close(df_signal)
 
-def generate_latest_signal_from_predictions(symbol: str = None, lookback_hours: int = 168):
-    """
-    从 predictions 读取最近 lookback_hours 小时的历史预测，交给 SignalGenerator，
-    生成一段信号，但**只 upsert 最后一行**到 signals 表（其余仅作上下文）。
-    """
-    pass
+    # 6) 整理列 & 元数据
+    out = df_signal.reset_index().rename(columns={'index': 'datetime'})
+    # out['symbol'] = target
+    out['model_name'] = MODEL_NAME
+    out['strategy_name'] = STRATEGY_NAME
 
-# === Step 7: 信号结果存入数据库 signal 表 ===
-# def store_signals(df_signal_final, conn):
-#     upsert_df(df_signal_final, table='signals', conn=conn)
+    # 7) 统一 datetime 字符串格式（避免 00:00:00 被显示成纯日期）
+    out['datetime'] = out['datetime'].map(_to_utc_naive_str)
+
+    # signals 表需要的列顺序（含 OHLCV）
+    cols = ['symbol', 'datetime',
+            'open', 'high', 'low', 'close', 'volume',
+            'actuals', 'predicted', 'zscore',
+            'raw_signal', 'vol_filter', 'filtered_signal',
+            'position', 'signal_reversal', 'final_signal',
+            'model_name', 'strategy_name']
+    out = out[cols]
+
+    return out
 
 # === 综合上述几步 ===
+# 第一次跑，predictions/signals表还是空的，一次性补全一段时间的预测和信号
+def initial_run(start_str):
+    conn, handler = ensure_db_initialized()
+    pred_df = backfill_predictions_from(handler=handler, start_str=start_str, buffer_windows=300,
+                                        train_windows=train_length)
+    upsert_df(pred_df, 'predictions', conn)
+
+    signals_df = generate_signals_from_predictions(handler, conn, start_str)
+
+    upsert_df(signals_df, 'signals', conn)
+
+# predictions和signals表非空，补全缺失的
 def run_pipeline():
-    # # 初始化数据库连接
-    # conn, handler = ensure_db_initialized()
-    #
-    # # 下载并存储最新价格数据
-    # fetch_and_store_backfill_no_lag(conn, handler, symbols, backfill_hours=4)
-    #
-    # # 特征工程
-    # df_processed, price_all = prepare_feature_data(handler, symbols, target, model_start_date)
-    #
-    # # 模型训练与预测
-    # pred_df = train_and_predict(df_processed, cv=tscv)
-    #
-    # # 生成信号
-    # df_signal_final = generate_signals(pred_df, price_all, target)
-    #
-    # # 写入数据库
-    # store_signals(df_signal_final, conn)
+    # 初始化数据库连接
+    conn, handler = ensure_db_initialized()
 
-    pass
+    # 已有预测的最大时间
+    max_dt = get_last_timestamp(conn, table='predictions')
 
+    # 如果和目前时间差距不足2小时，则说明预测已齐全，跳过预测
+    gap = pd.Timestamp.utcnow() - pd.to_datetime(max_dt, utc=True)
+    if gap.total_seconds() / (interval_minutes(INTERVAL)*60) < 2:
+        print("预测已是最新（<2个周期差），跳过补全与后续步骤。")
+        return
+
+    # 补全缺失的预测
+    pred_fill_df = backfill_predictions_from(handler=handler,
+                                              start_str=max_dt,
+                                             buffer_windows=300,
+                                              train_windows=train_length)
+
+    # 新增预测入库
+    upsert_df(pred_fill_df.reset_index(), 'predictions', conn)
+
+    # 已有信号的最大时间
+    start_str = get_last_timestamp(conn, table='signals')
+    # 补全缺失的信号
+    sig_all = generate_signals_from_predictions(
+        handler=handler,
+        conn=conn,
+        start_str=start_str
+    )
+    # 新增信号入库
+    upsert_df(sig_all,'signals', conn)
 
 
 if __name__ == '__main__':
@@ -329,19 +301,45 @@ if __name__ == '__main__':
     # print(settings.binance.model_dump())
 
     # run_pipeline()
-    # conn, handler, symbols, model_start_date = ensure_db_initialized()
+
+    # conn, handler= ensure_db_initialized()
+    # max_dt = get_last_timestamp(conn, 'predictions')
+    # print(max_dt)
+    # gap = pd.Timestamp.utcnow() - pd.to_datetime(max_dt, utc=True)
+    # print(gap)
+    # print(gap.total_seconds() / (interval_minutes(INTERVAL)*60))
+    #
+    # pred_fill_df = backfill_predictions_from(handler=handler,
+    #                                          start_str=max_dt,
+    #                                          buffer_windows=300,
+    #                                          train_windows=train_length)
+    # print(pred_fill_df.info())
     # df_processed, price_all = prepare_feature_data(handler, symbols, target, model_start_date)
     #
     # print(df_processed.info())
     # print(price_all.info())
 
     # print(settings.cv.model_dump())
-    handler = DataHandler()
+    # handler = DataHandler()
+    #
+    # latest = predict_latest(handler=handler,
+    #                                  symbols=all_symbols,
+    #                                  target=target,
+    #                                  buffer_windows=300,
+    #                                  train_windows=24 * 7 * 4)
+    # print(latest)
 
-    latest = predict_latest(handler=handler,
-                                     symbols=load_symbols,
-                                     target=target,
-                                     buffer_windows=300,
-                                     train_windows=24 * 7 * 4)
-    print(latest)
+    start_str = '2025-08-15 00:00:00'
+    # pred_df = backfill_predictions_from(handler=handler, start_str=start_str, buffer_windows=300,
+    #                                     train_windows=train_length)
+    # print(pred_df.info())
+    # print(pred_df.head())
+    # print(pred_df.tail())
+    # upsert_df(pred_df, 'predictions', conn)
+    # signals_df = generate_signals_from_predictions(handler, conn, start_str)
+    # print(signals_df.info())
+    # print(signals_df.head())
+    # print(signals_df.tail())
+    # upsert_df(signals_df, 'signals', conn)
+    initial_run(start_str=start_str)
 
