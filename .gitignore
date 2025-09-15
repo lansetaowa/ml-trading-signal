@@ -20,7 +20,6 @@ venv/
 # Output & data
 output/
 records/
-*.txt
 *.csv
 *.db
 *.h5
