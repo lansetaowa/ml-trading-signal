@@ -1,17 +1,17 @@
 # ML Signal Trading
 
-> 统一的数据获取 → 特征/指标 → 建模预测 → 信号 → 回测 → 可视化 → 实盘执行 的端到端项目。  
-> 代码基于 `Python 3.12`（见 `.venv/`）与本地 SQLite/文件持久化。
+> 从数据获取 → 特征工程 → 建模预测 → 信号生成 → 回测 → 可视化 → 实盘执行 的端到端交易信号项目。  
+> 基于 `Python 3.11+`，SQLite 数据库持久化。
 
 ## 项目速览
 ``` text 
-├─ pipeline.py # 全量/批处理流水线（离线）
-├─ hourly_runner.py # 定时/增量流水线（每小时）
-├─ backtest/ # 回测器与策略
-├─ conf/ # 配置模型 & YAML & ENV
-├─ data/ # 数据与数据库工具
+├─ pipeline.py # 全量/批处理流水线
+├─ signal_pipeline_runner.py # 定时/滚动执行（实盘/仿真）
+├─ backtest/ # 回测引擎与策略
+├─ conf/ # YAML 配置 + Pydantic 模型
+├─ data/ # 数据获取与数据库工具
 ├─ model/ # 特征/建模/评估/时序CV/信号
-├─ streamlit_app/ # 实时可视化
+├─ streamlit_app/ # 可视化
 ├─ trade/ # 实盘交易执行（合约）
 ├─ notebooks/ # 研究型Notebook
 └─ logs/ # 运行日志
@@ -33,9 +33,8 @@ pip install -r requirements.txt   # 若无，可后续生成
 
 ### 2) 配置
 - conf/settings.yaml：主配置（见下方示例） 
-- conf/binance_api.env：API Key/Secret
-- conf/proxy.env：HTTP(S) 代理（如需）
-- config.py / conf/settings_loader.py：加载与校验配置
+- .env：API Key/Secret、DB 路径、代理等（不要提交到版本库）
+- conf/config_models.py + conf/settings_loader.py：加载并校验配置
 
 ### 3) 运行
 ``` powershell
@@ -43,7 +42,7 @@ pip install -r requirements.txt   # 若无，可后续生成
 python pipeline.py
 
 # 小时级增量，滚动执行（建议先用 Testnet/干跑模式）
-python hourly_runner.py
+python signal_pipeline_runner.py
 
 # 可视化（研究/信号/价格）
 python plot_signals.py
@@ -103,17 +102,17 @@ conf/settings_loader.py：合并 ENV + YAML，导出 settings（供各模块使�
 
 ``` 
 表结构：
-Table: kline(symbol, datetime, open, high, low, close, volume)
-Table: signals(symbol, datetime, actuals, predicted, zscore, raw_signal, vol_filter, filtered_signal, position, signal_reversal, final_signal, model_name, strategy_name)
+Table: predictions(symbol, datetime, predicted, model_name)
+Table: signals(symbol, datetime, open, high, low, close, volume, actuals, predicted, zscore, raw_signal, vol_filter, filtered_signal, position, signal_reversal, final_signal, model_name, strategy_name)
 ```
 
-## 模块职责地图
+## 模块职责
 ``` text 
 pipeline.py
-  └─ 调用 model/ & data/ & predict/ & signal/，完成「拉取→特征→训练→预测→信号→落库」
+  └─ 调用 model/ & data/ & predict/ & signal/，完成「拉取→特征→训练→预测→信号→落库」。支持初始一次性预测一段时间，以及填充缺失预测。
 
-hourly_runner.py
-  └─ 循环/定时窗口化执行（近1小时/日），包含数据pipeline以及信号实盘执行
+signal_pipeline_runner.py
+  └─ 循环/定时窗口化执行（近0.5小时），包含数据pipeline以及信号实盘执行
 
 backtest/
   ├─ strategies.py     # 根据信号回测规则/参数（TP/SL/ATR/费用等）
@@ -141,11 +140,10 @@ streamlit_app/
 
 ## 典型工作流
 1. 离线研究（notebooks/）
-   - 载入 feature_generator/fit_pred/signal_generator/backtest，做参数调整 
-   - 可视化（streamlit_app/）
-2. 批处理/回放（pipeline.py）
+   - 载入 feature_generator/fit_pred/signal_generator/backtest，做参数调整，策略调整
+2. 批处理（pipeline.py）
     - 一致性地复现离线最佳参数
-3. 准实盘/仿真（hourly_runner.py with trade.testnet=true 或 dry-run）
+3. 仿真（signal_pipeline_runner.py with testnet 或 dry-run）
 4. 实盘（trade.testnet=false，谨慎切换，先小仓位）
 
 ## 日志与排障
@@ -153,12 +151,16 @@ streamlit_app/
 - 常见问题：
     - 时区/时间戳：确保所有 DataFrame 索引是naive UTC；插库前去 tz。 
     - API 限速/代理：检查 conf/proxy.env 与 binance_api.env 是否加载。
-    - Upsert 行为：data/db_utils.py 的 upsert 逻辑是否仅更新 actuals 字段（见下方 TODO）。
+    - Upsert 行为：db_utils.py 默认只更新 actuals，可按需调整
 
-## 安全与风控（实盘前必读）
+## 风控要点
 - trade/future_trader.py 支持 testnet 与 主网 切换（在 settings.yaml中设置）。
 - 开仓/平仓逻辑：
     - 空仓遇到 final_signal_filtered == 1 → 先平空再开多；反之亦然。
     - 止盈止损：限价优先（避免市价滑点过大），可按 ATR/Break-even 调整。
 - 资金费率与多交易所价差：若参与套利，请确认资金费率采集/估价逻辑的正确性与时效性。
 
+## TODO
+
+- 多 interval 支持（1h / 30m / 15m）
+- 更完整的 docs/ 文档同步

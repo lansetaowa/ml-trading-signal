@@ -84,7 +84,7 @@ trading:
     use_balance_ratio: 0.95
     atr_period: 8
     atr_k: 1.5
-    atr_k_tp: 1.0          # 新：止盈 1×ATR
+    atr_k_tp: 1         # 新：止盈 1×ATR
     atr_k_sl: 1.5          # 新：止损 1.5×ATR
     slippage_ticks: 2
     max_position_close_retries: 5
